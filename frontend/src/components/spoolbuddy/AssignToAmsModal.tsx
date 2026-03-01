@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { X, Loader2, CheckCircle, XCircle, Layers } from 'lucide-react';
 import { api, type InventorySpool, type PrinterStatus, type AMSTray } from '../../api/client';
 import { AmsUnitCard, NozzleBadge } from './AmsUnitCard';
@@ -29,6 +29,7 @@ interface AssignToAmsModalProps {
 
 export function AssignToAmsModal({ isOpen, onClose, spool, printerId }: AssignToAmsModalProps) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [statusType, setStatusType] = useState<'info' | 'success' | 'error' | null>(null);
 
@@ -98,10 +99,31 @@ export function AssignToAmsModal({ isOpen, onClose, spool, printerId }: AssignTo
         ams_id: amsId,
         tray_id: trayId,
       });
+
+      // Save slot preset mapping so ConfigureAmsSlotModal can show the preset
+      // (same as ConfigureAmsSlotModal does after configuring a slot)
+      if (spool.slicer_filament) {
+        const base = spool.slicer_filament.includes('_')
+          ? spool.slicer_filament.split('_')[0]
+          : spool.slicer_filament;
+        // Convert filament_id (GFL05) → setting_id (GFSL05); user presets (P*) pass through
+        const presetId = base.startsWith('GF') && !base.startsWith('GFS')
+          ? 'GFS' + base.slice(2)
+          : base;
+        const presetName = spool.subtype
+          ? `${spool.material} ${spool.subtype}`
+          : spool.material;
+        try {
+          await api.saveSlotPreset(printerId, amsId, trayId, presetId, presetName, 'cloud');
+        } catch (e) {
+          console.warn('Failed to save slot preset mapping:', e);
+        }
+      }
     },
     onSuccess: () => {
       setStatusType('success');
       setStatusMessage(t('spoolbuddy.modal.assignSuccess', 'Assigned!'));
+      queryClient.invalidateQueries({ queryKey: ['slotPresets'] });
       setTimeout(() => onClose(), 1500);
     },
     onError: (err) => {
