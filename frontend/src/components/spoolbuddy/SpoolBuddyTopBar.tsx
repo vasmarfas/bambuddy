@@ -78,7 +78,7 @@ export function SpoolBuddyTopBar({ selectedPrinterId, onPrinterChange, deviceOnl
       {/* Right side indicators */}
       <div className="flex items-center gap-3 shrink-0">
         {/* WiFi signal bars */}
-        <div className="flex items-center" title={deviceOnline ? t('spoolbuddy.status.online', 'Online') : t('spoolbuddy.status.offline', 'Offline')}>
+        <div className="flex items-center" title={deviceOnline ? t('spoolbuddy.status.backend', 'Backend') : t('spoolbuddy.status.offline', 'Offline')}>
           {deviceOnline ? (
             <div className="flex items-end gap-0.5 h-4">
               {[1, 2, 3, 4].map((level) => (
@@ -97,7 +97,7 @@ export function SpoolBuddyTopBar({ selectedPrinterId, onPrinterChange, deviceOnl
         {/* Device LED */}
         <div className="flex items-center gap-1.5">
           <div className={`w-3 h-3 rounded-full ${deviceOnline ? 'bg-bambu-green shadow-[0_0_6px_rgba(34,197,94,0.5)]' : 'bg-bambu-gray'}`} />
-          <span className="text-sm text-white/50">{deviceOnline ? t('spoolbuddy.status.online', 'Online') : t('spoolbuddy.status.offline', 'Offline')}</span>
+          <span className="text-sm text-white/50">{deviceOnline ? t('spoolbuddy.status.backend', 'Backend') : t('spoolbuddy.status.offline', 'Offline')}</span>
         </div>
 
         {/* Clock */}

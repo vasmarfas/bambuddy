@@ -30,6 +30,7 @@ from backend.app.schemas.spool import (
     SpoolUpdate,
 )
 from backend.app.schemas.spool_usage import SpoolUsageHistoryResponse
+from backend.app.utils.filament_ids import normalize_slicer_filament
 
 logger = logging.getLogger(__name__)
 
@@ -733,8 +734,7 @@ async def assign_spool(
             tray_type = spool.material
             tray_sub_brands = f"{spool.material} {spool.subtype}" if spool.subtype else spool.material
             tray_color = spool.rgba or "FFFFFFFF"
-            tray_info_idx = spool.slicer_filament or ""
-            setting_id = ""
+            tray_info_idx, setting_id = normalize_slicer_filament(spool.slicer_filament)
 
             # Resolve tray_info_idx for the MQTT command.
             # Priority:
