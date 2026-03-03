@@ -2695,7 +2695,6 @@ export default {
     sinceTracking: 'Since tracking started',
     loadedInAms: 'Loaded in AMS/Ext',
     remaining: 'Remaining',
-    lowStockThreshold: '<20% remaining',
     weightCheck: 'Weight Check',
     lastWeighed: 'Last weighed',
     neverWeighed: 'Never weighed',
@@ -2748,6 +2747,7 @@ export default {
     clearHistory: 'Clear',
     historyCleared: 'Usage history cleared',
     fillSourceLabel: '(Inv)',
+    lowStockThresholdError: 'Threshold must be between 0.1 and 99.9',
   },
 
   // Timelapse

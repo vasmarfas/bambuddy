@@ -2695,7 +2695,6 @@ export default {
     sinceTracking: 'Desde o início do rastreamento',
     loadedInAms: 'Carregado no AMS/Ext',
     remaining: 'Restante',
-    lowStockThreshold: '<20% restante',
     weightCheck: 'Verificação de Peso',
     lastWeighed: 'Última pesagem',
     neverWeighed: 'Nunca pesado',
@@ -2744,6 +2743,7 @@ export default {
     clearHistory: 'Limpar',
     historyCleared: 'Histórico de uso limpo',
     fillSourceLabel: '(Inv)',
+    lowStockThresholdError: 'O limite deve estar entre 0.1 e 99.9',
   },
 
   // Timelapse
