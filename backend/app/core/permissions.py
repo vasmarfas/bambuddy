@@ -4,7 +4,7 @@ This module defines all permissions using a string enum with `resource:action` n
 Permissions are additive across groups - a user has all permissions from all their groups.
 """
 
-from enum import StrEnum
+from backend.app.core.compat import StrEnum
 
 
 class Permission(StrEnum):

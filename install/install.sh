@@ -242,7 +242,7 @@ detect_python() {
     minor=$(echo "$version" | cut -d'.' -f2)
 
     if [[ "$major" -lt 3 ]] || { [[ "$major" -eq 3 ]] && [[ "$minor" -lt 10 ]]; }; then
-        log_warn "Python $version found, but 3.10+ is required"
+        log_warn "Python $version found, but 3.10 or newer is required"
         return 1
     fi
 
