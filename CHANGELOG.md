@@ -2,7 +2,9 @@
 
 All notable changes to Bambuddy will be documented in this file.
 
-## [0.2.2b2] - Unreleased
+## [0.2.2b3] - Unreleased
+
+## [0.2.2b2] - 2026-03-06
 
 ### New Features
 - **AMS Info Card & Custom Labels** ([#570](https://github.com/maziggy/bambuddy/pull/570)) — Hovering an AMS label (e.g. "AMS-A") on the Printers page now shows a popover with serial number, firmware version, and an editable friendly name. Custom labels are stored by AMS serial number so they persist when the unit is moved to a different printer. Slot numbers are now displayed inside each filament color circle with auto-inverted contrast for readability. Labels also appear in the Inventory page's location column. Contributed by @cadtoolbox.
