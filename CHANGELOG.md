@@ -4,6 +4,9 @@ All notable changes to Bambuddy will be documented in this file.
 
 ## [0.2.2b3] - Unreleased
 
+### Fixed
+- **Dispatch Toast Stuck After Second Print** — The print dispatch progress toast ("Starting prints…") stayed visible forever after the second print dispatch in a session. The dedup guard (`lastDispatchSummaryRef`) that prevents duplicate completion toasts was never reset between batches, so every single-printer dispatch produced the same summary key (`"first-complete:1:0"`). The first print completed normally, but subsequent completions matched the stale ref and skipped creating the done toast — leaving the progress toast stuck in "Processing" state with no way to dismiss except a page reload. Now resets the dedup guard whenever the dispatch toast is dismissed (auto-dismiss timeout, cleanup events) and when a new batch starts.
+
 ## [0.2.2b2] - 2026-03-06
 
 ### New Features

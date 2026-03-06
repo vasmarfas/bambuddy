@@ -268,6 +268,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           const timeout = setTimeout(() => {
             setToasts((prev) => prev.filter((t) => t.id !== dispatchToastId));
             timeoutRefs.current.delete(dispatchToastId);
+            lastDispatchSummaryRef.current = null;
           }, 3000);
           timeoutRefs.current.set(dispatchToastId, timeout);
         }
@@ -275,6 +276,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       }
 
       if (hasActiveWork) {
+        // New batch starting — reset dedup guard so completion toast works
+        lastDispatchSummaryRef.current = null;
         setToasts((prev) => {
           const existing = prev.find((toastItem) => toastItem.id === dispatchToastId);
           const existingJobs = existing?.dispatchData?.jobs || [];
@@ -419,6 +422,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         const timeout = setTimeout(() => {
           setToasts((prev) => prev.filter((t) => t.id !== dispatchToastId));
           timeoutRefs.current.delete(dispatchToastId);
+          lastDispatchSummaryRef.current = null;
         }, 3000);
         timeoutRefs.current.set(dispatchToastId, timeout);
         return;
@@ -426,10 +430,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
       if (!hasActiveWork && recentStatus && ['cancelled', 'failed', 'completed', 'idle'].includes(recentStatus)) {
         setToasts((prev) => prev.filter((t) => t.id !== dispatchToastId));
+        lastDispatchSummaryRef.current = null;
       }
 
       if (detail.recent_event?.status === 'idle' && !hasActiveWork) {
         setToasts((prev) => prev.filter((t) => t.id !== dispatchToastId));
+        lastDispatchSummaryRef.current = null;
       }
 
       if (!hasActiveWork) {
