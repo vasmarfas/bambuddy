@@ -3684,6 +3684,7 @@ export default {
       email: 'メール',
       discord: 'Discord',
       webhook: 'Webhook',
+      homeassistant: 'Home Assistant',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -3694,6 +3695,7 @@ export default {
       pushover: 'シンプルで信頼性の高いプッシュ通知',
       callmebot: 'CallMeBot経由の無料WhatsApp通知',
       webhook: '任意のURLへの汎用HTTP POST',
+      homeassistant: 'Home Assistantダッシュボードの永続通知',
     },
     // NotificationProviderCard
     lastSuccess: '最終: {{date}}',

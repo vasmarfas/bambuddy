@@ -3684,6 +3684,7 @@ export default {
       email: 'Email',
       discord: 'Discord',
       webhook: 'Webhook',
+      homeassistant: 'Home Assistant',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -3694,6 +3695,7 @@ export default {
       pushover: 'Simple, reliable push notifications',
       callmebot: 'Free WhatsApp notifications via CallMeBot',
       webhook: 'Generic HTTP POST to any URL',
+      homeassistant: 'Persistent notifications in Home Assistant dashboard',
     },
     // NotificationProviderCard
     lastSuccess: 'Last: {{date}}',

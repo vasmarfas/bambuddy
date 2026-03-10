@@ -3670,6 +3670,7 @@ export default {
       email: '电子邮件',
       discord: 'Discord',
       webhook: 'Webhook',
+      homeassistant: 'Home Assistant',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -3680,6 +3681,7 @@ export default {
       pushover: '简单、可靠的推送通知',
       callmebot: '通过 CallMeBot 免费发送 WhatsApp 通知',
       webhook: '通用 HTTP POST 到任意 URL',
+      homeassistant: 'Home Assistant 仪表板中的持久通知',
     },
     // NotificationProviderCard
     lastSuccess: '上次：{{date}}',

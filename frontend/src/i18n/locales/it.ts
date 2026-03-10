@@ -3670,6 +3670,7 @@ export default {
       email: 'Email',
       discord: 'Discord',
       webhook: 'Webhook',
+      homeassistant: 'Home Assistant',
     },
     // Provider descriptions
     providerDescriptions: {
@@ -3680,6 +3681,7 @@ export default {
       pushover: 'Notifiche push semplici e affidabili',
       callmebot: 'Notifiche WhatsApp gratuite tramite CallMeBot',
       webhook: 'POST HTTP generico verso qualsiasi URL',
+      homeassistant: 'Notifiche persistenti nella dashboard di Home Assistant',
     },
     // NotificationProviderCard
     lastSuccess: 'Ultimo: {{date}}',

@@ -2,6 +2,12 @@
 
 All notable changes to Bambuddy will be documented in this file.
 
+## [0.2.3b1] - Unreleased
+
+### New Features
+- **Home Assistant Notification Provider** ([#656](https://github.com/maziggy/bambuddy/issues/656)) — Added Home Assistant as a notification provider. When HA is configured in Settings → Network → Home Assistant, selecting "Home Assistant" as a notification provider sends persistent notifications to the HA dashboard — no additional configuration needed. From there, HA automations can forward notifications to mobile apps, WhatsApp, or any other service. Requested by @TravisWilder.
+
+
 ## [0.2.2b3] - Unreleased
 
 ### New Features

@@ -143,6 +143,7 @@ Perfect for remote print farms, traveling makers, or accessing your home printer
 ### 🔔 Notifications
 - WhatsApp, Telegram, Discord
 - Email, Pushover, ntfy
+- Home Assistant persistent notifications
 - Custom webhooks
 - Quiet hours & daily digest
 - Customizable message templates with per-filament usage details
