@@ -2,7 +2,7 @@
 
 All notable changes to Bambuddy will be documented in this file.
 
-## [0.2.3b1] - Unreleased
+## [0.2.2b3] - Unreleased
 
 ### New Features
 - **Virtual Printer Queue Auto-Dispatch Toggle** ([#587](https://github.com/maziggy/bambuddy/issues/587)) — Added an "Auto-dispatch" toggle to virtual printers in Queue mode. When enabled (default), prints sent from the slicer are added to the queue and start automatically on the assigned printer — matching the current behavior. When disabled, prints are added to the queue with `manual_start` set, so they wait for manual dispatch. This allows users who want to review and manually assign prints before they start. Requested by @Percy2Live.
