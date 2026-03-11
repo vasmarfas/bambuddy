@@ -44,6 +44,7 @@ import {
   Home,
   Printer as PrinterIcon,
   Info,
+  Cable,
 } from 'lucide-react';
 
 import { useNavigate } from 'react-router-dom';
@@ -2469,8 +2470,18 @@ function PrinterCard({
                 )}
                 {status?.connected ? t('printers.connection.connected') : t('printers.connection.offline')}
               </span>
+              {/* Network connection indicator */}
+              {status?.connected && status?.wired_network && (
+                <span
+                  className="flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-status-ok/20 text-status-ok"
+                  title={t('printers.connection.ethernet', 'Ethernet')}
+                >
+                  <Cable className="w-3 h-3" />
+                  {t('printers.connection.ethernet', 'Ethernet')}
+                </span>
+              )}
               {/* WiFi signal indicator */}
-              {status?.connected && wifiSignal != null && (
+              {status?.connected && !status?.wired_network && wifiSignal != null && (
                 <span
                   className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs ${
                     wifiSignal >= -50

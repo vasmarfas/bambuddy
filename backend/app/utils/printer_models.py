@@ -103,6 +103,41 @@ LINEAR_RAIL_MODELS = frozenset(
 )
 
 
+# Models with an ethernet port.
+# X1, P1P, A1, A1 Mini do NOT have ethernet.
+ETHERNET_MODELS = frozenset(
+    [
+        # Display names (uppercase, no spaces)
+        "X1C",
+        "X1E",
+        "P1S",
+        "P2S",
+        "H2D",
+        "H2DPRO",
+        "H2C",
+        "H2S",
+        # Internal codes
+        "C11",  # X1C
+        "C13",  # X1E
+        "P1S",  # P1S
+        "O1D",  # H2D
+        "O1E",  # H2D Pro
+        "O2D",  # H2D Pro (alternate)
+        "O1C",  # H2C
+        "O1C2",  # H2C (dual nozzle variant)
+        "O1S",  # H2S
+    ]
+)
+
+
+def has_ethernet(model: str | None) -> bool:
+    """Return True if the printer model has an ethernet port."""
+    if not model:
+        return False
+    normalized = model.strip().upper().replace(" ", "").replace("-", "")
+    return normalized in ETHERNET_MODELS
+
+
 def get_rod_type(model: str | None) -> str | None:
     """Return the rod/rail type for a printer model.
 
