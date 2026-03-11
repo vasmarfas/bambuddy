@@ -2306,9 +2306,18 @@ async def on_print_complete(printer_id: int, data: dict):
 
             logger.info("[BED-COOL] Monitoring bed temp for printer %s (threshold: %.0f°C)", printer_id, threshold)
 
+            # Request a fresh full status so we get current bed_temper
+            printer_manager.request_status_update(printer_id)
+
             max_polls = 120  # 120 * 15s = 30 min timeout
-            for _ in range(max_polls):
+            for poll_num in range(max_polls):
                 await asyncio.sleep(15)
+
+                # Request fresh temperature data every 60s — after print completion,
+                # the printer may send partial MQTT updates without bed_temper,
+                # leaving the cached value stale at the end-of-print temperature.
+                if poll_num % 4 == 0:
+                    printer_manager.request_status_update(printer_id)
 
                 # Check if printer is still connected
                 status = printer_manager.get_status(printer_id)
@@ -2327,7 +2336,15 @@ async def on_print_complete(printer_id: int, data: dict):
                     bed_temp = status.temperatures.get("bed")
 
                 if bed_temp is None:
+                    logger.debug(
+                        "[BED-COOL] Printer %s: bed temp is None (keys: %s, state: %s)",
+                        printer_id,
+                        list(status.temperatures.keys()) if isinstance(status.temperatures, dict) else "N/A",
+                        status.state if hasattr(status, "state") else "N/A",
+                    )
                     continue
+
+                logger.debug("[BED-COOL] Printer %s: bed=%.1f°C, threshold=%.0f°C", printer_id, bed_temp, threshold)
 
                 if bed_temp <= threshold:
                     logger.info(
