@@ -3182,9 +3182,13 @@ function PrinterCard({
                                   }
                                   return null;
                                 })();
-                                const effectiveFill = spoolmanFill ?? inventoryFill ?? (hasFillLevel ? tray.remain : null);
+                                // If inventory says 0% but AMS reports positive remain, prefer AMS
+                                // (inventory weight_used may be stale or over-counted — #676)
+                                const resolvedInventoryFill = (inventoryFill === 0 && hasFillLevel && tray.remain > 0)
+                                  ? null : inventoryFill;
+                                const effectiveFill = spoolmanFill ?? resolvedInventoryFill ?? (hasFillLevel ? tray.remain : null);
                                 const fillSource = spoolmanFill !== null ? 'spoolman' as const
-                                  : inventoryFill !== null ? 'inventory' as const
+                                  : resolvedInventoryFill !== null ? 'inventory' as const
                                   : hasFillLevel ? 'ams' as const
                                   : undefined;
 
@@ -3406,9 +3410,12 @@ function PrinterCard({
                           }
                           return null;
                         })();
-                        const htEffectiveFill = htSpoolmanFill ?? htInventoryFill ?? (hasFillLevel ? tray.remain : null);
+                        // If inventory says 0% but AMS reports positive remain, prefer AMS (#676)
+                        const htResolvedInventoryFill = (htInventoryFill === 0 && hasFillLevel && tray.remain > 0)
+                          ? null : htInventoryFill;
+                        const htEffectiveFill = htSpoolmanFill ?? htResolvedInventoryFill ?? (hasFillLevel ? tray.remain : null);
                         const htFillSource = htSpoolmanFill !== null ? 'spoolman' as const
-                          : htInventoryFill !== null ? 'inventory' as const
+                          : htResolvedInventoryFill !== null ? 'inventory' as const
                           : hasFillLevel ? 'ams' as const
                           : undefined;
 
@@ -3732,9 +3739,12 @@ function PrinterCard({
                                 return null;
                               })();
                               const extHasFillLevel = extTray.tray_type && extTray.remain >= 0;
-                              const extEffectiveFill = extSpoolmanFill ?? extInventoryFill ?? (extHasFillLevel ? extTray.remain : null);
+                              // If inventory says 0% but AMS reports positive remain, prefer AMS (#676)
+                              const extResolvedInventoryFill = (extInventoryFill === 0 && extHasFillLevel && extTray.remain > 0)
+                                ? null : extInventoryFill;
+                              const extEffectiveFill = extSpoolmanFill ?? extResolvedInventoryFill ?? (extHasFillLevel ? extTray.remain : null);
                               const extFillSource = extSpoolmanFill !== null ? 'spoolman' as const
-                                : extInventoryFill !== null ? 'inventory' as const
+                                : extResolvedInventoryFill !== null ? 'inventory' as const
                                 : extHasFillLevel ? 'ams' as const
                                 : undefined;
 
