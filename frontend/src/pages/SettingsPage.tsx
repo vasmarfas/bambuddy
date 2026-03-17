@@ -3505,11 +3505,9 @@ export function SettingsPage() {
                       <table className="w-full text-xs">
                         <thead>
                           <tr className="text-bambu-gray border-b border-bambu-dark-tertiary">
-                            <th className="text-left py-1.5 pr-2">{t('settings.dryingFilament')}</th>
-                            <th className="text-center py-1.5 px-1">AMS 2 Pro °C</th>
-                            <th className="text-center py-1.5 px-1">AMS-HT °C</th>
-                            <th className="text-center py-1.5 px-1">AMS 2 Pro h</th>
-                            <th className="text-center py-1.5 px-1">AMS-HT h</th>
+                            <th className="text-left py-1.5">{t('settings.dryingFilament')}</th>
+                            <th className="text-center py-1.5" colSpan={2}>AMS 2 Pro</th>
+                            <th className="text-center py-1.5" colSpan={2}>AMS-HT</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -3542,18 +3540,58 @@ export function SettingsPage() {
                             return Object.entries(presets).map(([fil, preset]) => (
                               <tr key={fil} className="border-b border-bambu-dark-tertiary/50">
                                 <td className="py-1.5 pr-2 text-white font-medium">{fil}</td>
-                                {(['n3f', 'n3s', 'n3f_hours', 'n3s_hours'] as const).map(key => (
-                                  <td key={key} className="py-1 px-1">
+                                <td className="py-1 px-1">
+                                  <div className="flex items-center justify-end gap-1">
                                     <input
                                       type="number"
-                                      min={key.includes('hours') ? 1 : 30}
-                                      max={key.includes('hours') ? 24 : (key === 'n3s' ? 85 : 65)}
-                                      value={preset[key]}
-                                      onChange={e => updatePreset(fil, key, Math.max(1, parseInt(e.target.value) || 0))}
+                                      min={30}
+                                      max={65}
+                                      value={preset.n3f}
+                                      onChange={e => updatePreset(fil, 'n3f', Math.max(1, parseInt(e.target.value) || 0))}
                                       className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                     />
-                                  </td>
-                                ))}
+                                    <span className="text-bambu-gray">°C</span>
+                                  </div>
+                                </td>
+                                <td className="py-1 px-1">
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      max={24}
+                                      value={preset.n3f_hours}
+                                      onChange={e => updatePreset(fil, 'n3f_hours', Math.max(1, parseInt(e.target.value) || 0))}
+                                      className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                    />
+                                    <span className="text-bambu-gray">h</span>
+                                  </div>
+                                </td>
+                                <td className="py-1 px-1">
+                                  <div className="flex items-center justify-end gap-1">
+                                    <input
+                                      type="number"
+                                      min={30}
+                                      max={85}
+                                      value={preset.n3s}
+                                      onChange={e => updatePreset(fil, 'n3s', Math.max(1, parseInt(e.target.value) || 0))}
+                                      className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                    />
+                                    <span className="text-bambu-gray">°C</span>
+                                  </div>
+                                </td>
+                                <td className="py-1 px-1">
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      max={24}
+                                      value={preset.n3s_hours}
+                                      onChange={e => updatePreset(fil, 'n3s_hours', Math.max(1, parseInt(e.target.value) || 0))}
+                                      className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                    />
+                                    <span className="text-bambu-gray">h</span>
+                                  </div>
+                                </td>
                               </tr>
                             ));
                           })()}
