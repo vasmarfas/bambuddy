@@ -18,8 +18,8 @@ MQTT_PORT = 8883
 
 # Model code → product_name for version response (must match what slicer expects)
 MODEL_PRODUCT_NAMES = {
-    "3DPrinter-X1-Carbon": "X1 Carbon",
-    "3DPrinter-X1": "X1",
+    "BL-P001": "X1 Carbon",
+    "BL-P002": "X1",
     "C13": "X1E",
     "C11": "P1P",
     "C12": "P1S",
