@@ -30,7 +30,7 @@ All notable changes to Bambuddy will be documented in this file.
 - **Reformatted AMS Drying Presets Table** ([#732](https://github.com/maziggy/bambuddy/issues/732)) — The drying presets table in Settings now groups columns by AMS type (AMS 2 Pro, AMS-HT) with inline °C and h unit labels next to each input, replacing the previous flat column layout. Requested by @cadtoolbox.
 
 ### Security
-- **VP FTP Server Logged Passwords in Plaintext** — The Virtual Printer FTP server logged the full `PASS` command including the access code in plaintext. Since logs are included in support packages shared on GitHub, this could expose user credentials. The password is now always redacted as `PASS ********`. Also added VP name prefix to all FTP/MQTT log lines for easier diagnostics, and demoted FTP protocol chatter from `info` to `debug`.
+
 
 ## [0.2.2] - 2026-03-16
 
