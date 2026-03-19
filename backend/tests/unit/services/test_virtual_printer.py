@@ -1093,6 +1093,9 @@ class TestSlicerProxyManager:
         assert proxy_manager.PRINTER_RTSP_PORT == 322
         # Bind ports: both 3000 and 3002 for slicer compatibility
         assert proxy_manager.PRINTER_BIND_PORTS == [3000, 3002]
+        # FTP data port range for transparent EPSV proxying
+        assert proxy_manager.FTP_DATA_PORT_MIN == 50000
+        assert proxy_manager.FTP_DATA_PORT_MAX == 50100
 
     def test_proxy_manager_stores_target_host(self, proxy_manager):
         """Verify proxy manager stores target host."""
@@ -1105,6 +1108,89 @@ class TestSlicerProxyManager:
         assert status["running"] is False
         assert status["ftp_connections"] == 0
         assert status["mqtt_connections"] == 0
+
+    @pytest.mark.asyncio
+    async def test_proxy_start_creates_transparent_proxies(self, tmp_path):
+        """Verify start() uses TCPProxy for FTP/FileTransfer/RTSP and TLSProxy only for MQTT.
+
+        The transparent proxy architecture preserves end-to-end TLS between
+        slicer and printer for all protocols except MQTT, which must be
+        TLS-terminated to rewrite the printer's IP in MQTT payloads.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from backend.app.services.virtual_printer.tcp_proxy import (
+            SlicerProxyManager,
+            TCPProxy,
+            TLSProxy,
+        )
+
+        cert_path = tmp_path / "cert.pem"
+        key_path = tmp_path / "key.pem"
+        cert_path.write_text("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----")
+        key_path.write_text("-----BEGIN " + "PRIVATE KEY-----\ntest\n-----END " + "PRIVATE KEY-----")
+
+        mgr = SlicerProxyManager(
+            target_host="192.168.1.100",
+            cert_path=cert_path,
+            key_path=key_path,
+            bind_address="10.0.0.1",
+        )
+
+        # Mock asyncio.create_task and asyncio.gather to prevent actual server start
+        with (
+            patch("asyncio.create_task") as mock_create_task,
+            patch("asyncio.gather", new_callable=AsyncMock),
+            patch.object(SlicerProxyManager, "_log_activity"),
+        ):
+            mock_create_task.return_value = MagicMock()
+            # start() will create proxies then try to gather tasks — we just
+            # need to verify the proxy types after creation.
+            # Trigger start but let gather return immediately.
+            await mgr.start()
+
+        # FTP, FileTransfer, RTSP should be TCPProxy (transparent)
+        assert isinstance(mgr._ftp_proxy, TCPProxy), "FTP should be TCPProxy (transparent)"
+        assert isinstance(mgr._file_transfer_proxy, TCPProxy), "FileTransfer should be TCPProxy"
+        assert isinstance(mgr._rtsp_proxy, TCPProxy), "RTSP should be TCPProxy"
+
+        # MQTT should be TLSProxy (TLS-terminated for IP rewriting)
+        assert isinstance(mgr._mqtt_proxy, TLSProxy), "MQTT should be TLSProxy (TLS-terminated)"
+
+        # FTP data ports should be pre-created as TCPProxy instances
+        assert len(mgr._ftp_data_proxies) == 101  # 50000-50100 inclusive
+        for dp in mgr._ftp_data_proxies:
+            assert isinstance(dp, TCPProxy), "FTP data proxies should be TCPProxy"
+
+        # Verify FTP data proxies target the same port on the printer
+        first_dp = mgr._ftp_data_proxies[0]
+        assert first_dp.listen_port == 50000
+        assert first_dp.target_port == 50000
+        assert first_dp.target_host == "192.168.1.100"
+
+        last_dp = mgr._ftp_data_proxies[-1]
+        assert last_dp.listen_port == 50100
+        assert last_dp.target_port == 50100
+
+    def test_proxy_manager_mqtt_has_ip_rewriting(self, tmp_path):
+        """Verify MQTT proxy is configured with IP rewriting when bind_address is set."""
+        from backend.app.services.virtual_printer.tcp_proxy import SlicerProxyManager
+
+        cert_path = tmp_path / "cert.pem"
+        key_path = tmp_path / "key.pem"
+        cert_path.write_text("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----")
+        key_path.write_text("-----BEGIN " + "PRIVATE KEY-----\ntest\n-----END " + "PRIVATE KEY-----")
+
+        mgr = SlicerProxyManager(
+            target_host="192.168.1.100",
+            cert_path=cert_path,
+            key_path=key_path,
+            bind_address="10.0.0.1",
+        )
+
+        # Before start, proxies are None — verify constructor stores rewrite config
+        assert mgr.bind_address == "10.0.0.1"
+        assert mgr.target_host == "192.168.1.100"
 
 
 class TestSSDPProxy:

@@ -22,8 +22,8 @@ Proxy mode now requires two additional ports:
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
-| 6000 | TCP/TLS | File transfer tunnel (verify_job + print uploads) |
-| 322 | TCP/TLS | RTSP camera streaming (X1/H2/P2 series) |
+| 6000 | TCP | File transfer tunnel (transparent proxy, end-to-end TLS) |
+| 322 | TCP | RTSP camera streaming (transparent proxy, end-to-end TLS) |
 
 These ports are proxied automatically — no iptables rules needed. If you have
 a firewall, ensure these ports are open between the slicer and Bambuddy.
