@@ -82,6 +82,7 @@ class TLSProxy:
         on_connect: Callable[[str], None] | None = None,
         on_disconnect: Callable[[str], None] | None = None,
         bind_address: str = "0.0.0.0",  # nosec B104
+        rewrite_ip: tuple[str, str] | None = None,
     ):
         """Initialize the TLS proxy.
 
@@ -95,6 +96,10 @@ class TLSProxy:
             on_connect: Optional callback when client connects (receives client_id)
             on_disconnect: Optional callback when client disconnects (receives client_id)
             bind_address: IP address to bind to (default: all interfaces)
+            rewrite_ip: Optional (old_ip, new_ip) tuple — replaces occurrences of
+                the printer's real IP with the proxy's bind IP in printer→client data.
+                This prevents the slicer from discovering the printer's real IP
+                in MQTT payloads (ip_addr, rtsp_url, etc.) and bypassing the proxy.
         """
         self.name = name
         self.listen_port = listen_port
@@ -106,11 +111,40 @@ class TLSProxy:
         self.on_disconnect = on_disconnect
         self.bind_address = bind_address
 
+        # IP rewriting for printer→client direction
+        if rewrite_ip:
+            self._rewrite_old = rewrite_ip[0].encode("utf-8")
+            self._rewrite_new = rewrite_ip[1].encode("utf-8")
+            # Also rewrite the integer IP in net.info[].ip fields.
+            # Bambu printers encode their IP as a little-endian uint32 integer
+            # in the JSON payload. BambuStudio reads this to set dev_ip.
+            self._rewrite_old_int = self._ip_to_le_int_bytes(rewrite_ip[0])
+            self._rewrite_new_int = self._ip_to_le_int_bytes(rewrite_ip[1])
+        else:
+            self._rewrite_old = None
+            self._rewrite_new = None
+            self._rewrite_old_int = None
+            self._rewrite_new_int = None
+
         self._server: asyncio.Server | None = None
         self._running = False
         self._active_connections: dict[str, tuple[asyncio.Task, asyncio.Task]] = {}
         self._server_ssl_context: ssl.SSLContext | None = None
         self._client_ssl_context: ssl.SSLContext | None = None
+
+    @staticmethod
+    def _ip_to_le_int_bytes(ip: str) -> bytes:
+        """Convert an IP address to its little-endian integer JSON representation.
+
+        E.g. "192.168.255.16" → b"285190336" (the integer as a decimal string,
+        as it appears in Bambu MQTT JSON payloads in the net.info[].ip field).
+        """
+        import struct as _struct
+
+        parts = ip.split(".")
+        packed = bytes(int(p) for p in parts)
+        le_int = _struct.unpack("<I", packed)[0]
+        return str(le_int).encode("utf-8")
 
     def _create_server_ssl_context(self) -> ssl.SSLContext:
         """Create SSL context for accepting client (slicer) connections."""
@@ -263,7 +297,7 @@ class TLSProxy:
             name=f"{self.name}_c2p_{client_id}",
         )
         printer_to_client = asyncio.create_task(
-            self._forward(printer_reader, client_writer, f"printer→{client_id}"),
+            self._forward(printer_reader, client_writer, f"printer→{client_id}", rewrite_ip=True),
             name=f"{self.name}_p2c_{client_id}",
         )
 
@@ -305,11 +339,157 @@ class TLSProxy:
                 except Exception:
                     pass  # Ignore disconnect callback errors; cleanup continues
 
+    @staticmethod
+    def _rewrite_mqtt_ip(
+        data: bytes,
+        old_ip: bytes,
+        new_ip: bytes,
+        buffer: bytearray,
+        extra_replacements: list[tuple[bytes, bytes]] | None = None,
+    ) -> tuple[bytes, bytearray]:
+        """Rewrite IP addresses inside MQTT packets, preserving packet framing.
+
+        MQTT packets have a variable-length header encoding the remaining
+        packet length.  A naive bytes.replace() would corrupt this framing
+        when old_ip and new_ip differ in length.
+
+        This method parses individual MQTT packets out of the data stream,
+        performs the replacement only on PUBLISH payloads, and re-encodes
+        the remaining-length field to match the new size.
+
+        Incomplete packets are buffered and returned for the next call.
+
+        Args:
+            extra_replacements: Additional (old, new) byte pairs to replace
+                (e.g. the integer IP representation in net.info[].ip).
+
+        Returns (output_data, remaining_buffer).
+        """
+        buffer.extend(data)
+
+        # Check if any replacement target exists in the buffer
+        has_target = old_ip in buffer
+        if not has_target and extra_replacements:
+            has_target = any(old in buffer for old, _new in extra_replacements)
+
+        if not has_target:
+            # Fast path: no IP in buffer, but we still need to check for
+            # incomplete packets at the end that might contain a partial IP.
+            # For safety, try to parse and emit only complete packets.
+            result = bytearray()
+            pos = 0
+            length = len(buffer)
+
+            while pos < length:
+                packet_start = pos
+                if pos + 1 >= length:
+                    break
+                pos += 1  # header byte
+
+                # Parse remaining length
+                remaining_length = 0
+                multiplier = 1
+                length_bytes = 0
+                while pos < length:
+                    encoded_byte = buffer[pos]
+                    pos += 1
+                    remaining_length += (encoded_byte & 0x7F) * multiplier
+                    multiplier *= 128
+                    length_bytes += 1
+                    if (encoded_byte & 0x80) == 0:
+                        break
+                    if length_bytes >= 4:
+                        break
+
+                if pos + remaining_length > length:
+                    # Incomplete — keep in buffer
+                    new_buffer = bytearray(buffer[packet_start:])
+                    return bytes(result), new_buffer
+
+                pos += remaining_length
+                result.extend(buffer[packet_start:pos])
+
+            # All complete
+            buffer.clear()
+            return bytes(result) if result else bytes(data), buffer
+
+        # Buffer contains old_ip — parse packets and rewrite
+        result = bytearray()
+        pos = 0
+        length = len(buffer)
+
+        while pos < length:
+            packet_start = pos
+
+            if pos >= length:
+                break
+            header_byte = buffer[pos]
+            pos += 1
+
+            # Remaining length: variable-length encoding (1-4 bytes)
+            remaining_length = 0
+            multiplier = 1
+            length_bytes = 0
+            while pos < length:
+                encoded_byte = buffer[pos]
+                pos += 1
+                remaining_length += (encoded_byte & 0x7F) * multiplier
+                multiplier *= 128
+                length_bytes += 1
+                if (encoded_byte & 0x80) == 0:
+                    break
+                if length_bytes >= 4:
+                    break
+
+            # Check if we have enough data for the full packet
+            if pos + remaining_length > length:
+                # Incomplete packet — keep in buffer for next call
+                new_buffer = bytearray(buffer[packet_start:])
+                return bytes(result), new_buffer
+
+            packet_type = (header_byte >> 4) & 0x0F
+            packet_body = buffer[pos : pos + remaining_length]
+            pos += remaining_length
+
+            # Only rewrite PUBLISH packets (type 3)
+            needs_rewrite = packet_type == 3 and (
+                old_ip in packet_body
+                or (extra_replacements and any(old in packet_body for old, _new in extra_replacements))
+            )
+            if needs_rewrite:
+                new_body = bytes(packet_body).replace(old_ip, new_ip)
+                if extra_replacements:
+                    for old_val, new_val in extra_replacements:
+                        new_body = new_body.replace(old_val, new_val)
+
+                # Re-encode: header byte + new remaining length + new body
+                result.append(header_byte)
+
+                # Encode remaining length (MQTT variable-length encoding)
+                new_remaining = len(new_body)
+                while True:
+                    encoded_byte = new_remaining % 128
+                    new_remaining //= 128
+                    if new_remaining > 0:
+                        encoded_byte |= 0x80
+                    result.append(encoded_byte)
+                    if new_remaining == 0:
+                        break
+
+                result.extend(new_body)
+            else:
+                # Pass through unchanged
+                result.extend(buffer[packet_start:pos])
+
+        buffer.clear()
+        return bytes(result), buffer
+
     async def _forward(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         direction: str,
+        rewrite_ip: bool = False,
     ) -> None:
         """Forward data from reader to writer.
 
@@ -317,7 +497,12 @@ class TLSProxy:
             reader: Source stream (already TLS-decrypted)
             writer: Destination stream (will be TLS-encrypted by the stream)
             direction: Description for logging (e.g., "client→printer")
+            rewrite_ip: If True and rewrite_ip was configured, replace the
+                printer's real IP with the proxy's bind IP in the data.
         """
+        do_rewrite = rewrite_ip and self._rewrite_old is not None
+        rewrite_buffer = bytearray() if do_rewrite else None
+        rewrite_logged = False
         total_bytes = 0
         try:
             while self._running:
@@ -326,6 +511,29 @@ class TLSProxy:
                 if not data:
                     # Connection closed
                     break
+
+                # Rewrite printer IP → proxy IP in MQTT PUBLISH payloads
+                # to prevent the slicer from bypassing the proxy.
+                if do_rewrite:
+                    original_len = len(data)
+                    extra = [(self._rewrite_old_int, self._rewrite_new_int)] if self._rewrite_old_int else None
+                    data, rewrite_buffer = self._rewrite_mqtt_ip(
+                        data,
+                        self._rewrite_old,
+                        self._rewrite_new,
+                        rewrite_buffer,
+                        extra_replacements=extra,
+                    )
+                    if not rewrite_logged and data and len(data) != original_len:
+                        logger.info(
+                            "%s proxy IP rewrite active: %s → %s",
+                            self.name,
+                            self._rewrite_old.decode(),
+                            self._rewrite_new.decode(),
+                        )
+                        rewrite_logged = True
+                    if not data:
+                        continue  # All data buffered, waiting for more
 
                 # Forward to destination
                 writer.write(data)
@@ -923,6 +1131,11 @@ class FTPTLSProxy(TLSProxy):
     async def _start_data_proxy_server(self, port: int, printer_ip: str, printer_port: int, use_tls: bool) -> None:
         """Start a one-shot server for one FTP data connection.
 
+        When the slicer connects, immediately connects to the printer's data
+        port and buffers any slicer data until the printer connection is ready.
+        This handles zero-byte uploads (verify_job) where the slicer closes
+        the data channel before a naive proxy would finish its TLS handshake.
+
         The slicer-side listener is ALWAYS cleartext.  Even when the slicer
         sends PROT P on the control channel, Bambu Studio does not perform
         a TLS handshake on the data connection — it relies on the implicit
@@ -967,13 +1180,26 @@ class FTPTLSProxy(TLSProxy):
 
             printer_writer = None
             try:
+                # Buffer any slicer data while connecting to printer.
+                # This handles the race where the slicer sends data (or closes
+                # for zero-byte files) before the TLS handshake completes.
+                slicer_buffer = bytearray()
+                slicer_eof = False
+
+                async def buffer_slicer():
+                    nonlocal slicer_eof
+                    while True:
+                        chunk = await client_reader.read(65536)
+                        if not chunk:
+                            slicer_eof = True
+                            return
+                        slicer_buffer.extend(chunk)
+
+                buffer_task = asyncio.create_task(buffer_slicer())
+
                 # Connect to printer's data port
                 printer_reader, printer_writer = await asyncio.wait_for(
-                    asyncio.open_connection(
-                        printer_ip,
-                        printer_port,
-                        ssl=client_ssl,
-                    ),
+                    asyncio.open_connection(printer_ip, printer_port, ssl=client_ssl),
                     timeout=10.0,
                 )
                 logger.info(
@@ -984,21 +1210,35 @@ class FTPTLSProxy(TLSProxy):
                     printer_port,
                 )
 
-                # Bidirectional data forwarding
-                c2p = asyncio.create_task(self._forward(client_reader, printer_writer, "data_c2p"))
-                p2c = asyncio.create_task(self._forward(printer_reader, client_writer, "data_p2c"))
+                # Stop buffering
+                buffer_task.cancel()
+                try:
+                    await buffer_task
+                except asyncio.CancelledError:
+                    pass
 
-                done, pending = await asyncio.wait([c2p, p2c], return_when=asyncio.FIRST_COMPLETED)
-                for task in pending:
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass  # Expected when other data direction closes
-            except TimeoutError:
-                logger.error("FTP data proxy port %s: timeout connecting to printer", port)
-            except ssl.SSLError as e:
-                logger.error("FTP data proxy port %s: SSL error to printer: %s", port, e)
+                # Flush buffered slicer data to printer
+                if slicer_buffer:
+                    printer_writer.write(bytes(slicer_buffer))
+                    await printer_writer.drain()
+
+                if slicer_eof:
+                    # Slicer already closed (zero-byte upload like verify_job).
+                    # Close the printer write side to signal upload complete.
+                    if printer_writer.can_write_eof():
+                        printer_writer.write_eof()
+                else:
+                    # Continue bidirectional forwarding
+                    c2p = asyncio.create_task(self._forward(client_reader, printer_writer, "data_c2p"))
+                    p2c = asyncio.create_task(self._forward(printer_reader, client_writer, "data_p2c"))
+
+                    done, pending = await asyncio.wait([c2p, p2c], return_when=asyncio.FIRST_COMPLETED)
+                    for task in pending:
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass  # Expected when other data direction closes
             except Exception as e:
                 logger.error("FTP data proxy port %s: error: %s", port, e)
             finally:
@@ -1048,6 +1288,7 @@ class SlicerProxyManager:
     # Bambu printer ports
     PRINTER_FTP_PORT = 990
     PRINTER_MQTT_PORT = 8883
+    PRINTER_FILE_TRANSFER_PORT = 6000
     PRINTER_BIND_PORTS = [3000, 3002]
 
     # Local listen ports - must match what Bambu Studio expects
@@ -1062,6 +1303,7 @@ class SlicerProxyManager:
         key_path: Path,
         on_activity: Callable[[str, str], None] | None = None,
         bind_address: str = "0.0.0.0",  # nosec B104
+        bind_identity: dict[str, str] | None = None,
     ):
         """Initialize the slicer proxy manager.
 
@@ -1071,16 +1313,23 @@ class SlicerProxyManager:
             key_path: Path to server private key
             on_activity: Optional callback for activity logging (name, message)
             bind_address: IP address to bind proxy listeners to
+            bind_identity: Optional dict with keys (serial, model, name, version)
+                for the bind/detect response. When provided, the proxy responds
+                to detect requests itself instead of forwarding to the printer.
+                This ensures the slicer sees the VP identity, not the real printer.
         """
         self.target_host = target_host
         self.cert_path = cert_path
         self.key_path = key_path
         self.on_activity = on_activity
         self.bind_address = bind_address
+        self.bind_identity = bind_identity
 
         self._ftp_proxy: TLSProxy | None = None
         self._mqtt_proxy: TLSProxy | None = None
+        self._file_transfer_proxy: TLSProxy | None = None
         self._bind_proxies: list[TCPProxy] = []
+        self._bind_server = None
         self._tasks: list[asyncio.Task] = []
 
     async def start(self) -> None:
@@ -1124,33 +1373,65 @@ class SlicerProxyManager:
             on_connect=lambda cid: self._log_activity("MQTT", f"connected: {cid}"),
             on_disconnect=lambda cid: self._log_activity("MQTT", f"disconnected: {cid}"),
             bind_address=self.bind_address,
+            rewrite_ip=(self.target_host, self.bind_address) if self.bind_address != "0.0.0.0" else None,
         )
 
-        # Bind/auth proxy — port 3000 plain TCP, port 3002 TLS
-        for bind_port in self.PRINTER_BIND_PORTS:
-            if bind_port == 3002:
-                proxy = TLSProxy(
-                    name="Bind-TLS",
-                    listen_port=bind_port,
-                    target_host=self.target_host,
-                    target_port=bind_port,
-                    server_cert_path=self.cert_path,
-                    server_key_path=self.key_path,
-                    on_connect=lambda cid: self._log_activity("Bind", f"connected: {cid}"),
-                    on_disconnect=lambda cid: self._log_activity("Bind", f"disconnected: {cid}"),
-                    bind_address=self.bind_address,
-                )
-            else:
-                proxy = TCPProxy(
-                    name="Bind",
-                    listen_port=bind_port,
-                    target_host=self.target_host,
-                    target_port=bind_port,
-                    on_connect=lambda cid: self._log_activity("Bind", f"connected: {cid}"),
-                    on_disconnect=lambda cid: self._log_activity("Bind", f"disconnected: {cid}"),
-                    bind_address=self.bind_address,
-                )
-            self._bind_proxies.append(proxy)
+        # File transfer proxy — port 6000 (TLS)
+        # BambuStudio connects here for verify_job and actual file uploads.
+        self._file_transfer_proxy = TLSProxy(
+            name="FileTransfer",
+            listen_port=self.PRINTER_FILE_TRANSFER_PORT,
+            target_host=self.target_host,
+            target_port=self.PRINTER_FILE_TRANSFER_PORT,
+            server_cert_path=self.cert_path,
+            server_key_path=self.key_path,
+            on_connect=lambda cid: self._log_activity("FileTransfer", f"connected: {cid}"),
+            on_disconnect=lambda cid: self._log_activity("FileTransfer", f"disconnected: {cid}"),
+            bind_address=self.bind_address,
+        )
+
+        # Bind/auth — respond with VP identity instead of proxying to printer.
+        # The detect response contains the printer name, serial, model, and
+        # bind status. Proxying it would leak the real printer's identity and
+        # cause the slicer to treat it as a different device.
+        if self.bind_identity:
+            from backend.app.services.virtual_printer.bind_server import BindServer
+
+            self._bind_server = BindServer(
+                serial=self.bind_identity["serial"],
+                model=self.bind_identity["model"],
+                name=self.bind_identity["name"],
+                version=self.bind_identity.get("version", "01.00.00.00"),
+                bind_address=self.bind_address,
+                cert_path=self.cert_path,
+                key_path=self.key_path,
+            )
+        else:
+            # Fallback: proxy bind requests to the real printer
+            for bind_port in self.PRINTER_BIND_PORTS:
+                if bind_port == 3002:
+                    proxy = TLSProxy(
+                        name="Bind-TLS",
+                        listen_port=bind_port,
+                        target_host=self.target_host,
+                        target_port=bind_port,
+                        server_cert_path=self.cert_path,
+                        server_key_path=self.key_path,
+                        on_connect=lambda cid: self._log_activity("Bind", f"connected: {cid}"),
+                        on_disconnect=lambda cid: self._log_activity("Bind", f"disconnected: {cid}"),
+                        bind_address=self.bind_address,
+                    )
+                else:
+                    proxy = TCPProxy(
+                        name="Bind",
+                        listen_port=bind_port,
+                        target_host=self.target_host,
+                        target_port=bind_port,
+                        on_connect=lambda cid: self._log_activity("Bind", f"connected: {cid}"),
+                        on_disconnect=lambda cid: self._log_activity("Bind", f"disconnected: {cid}"),
+                        bind_address=self.bind_address,
+                    )
+                self._bind_proxies.append(proxy)
 
         # Start as background tasks
         async def run_with_logging(proxy: TLSProxy) -> None:
@@ -1168,7 +1449,18 @@ class SlicerProxyManager:
                 run_with_logging(self._mqtt_proxy),
                 name="slicer_proxy_mqtt",
             ),
+            asyncio.create_task(
+                run_with_logging(self._file_transfer_proxy),
+                name="slicer_proxy_file_transfer",
+            ),
         ]
+        if self._bind_server:
+            self._tasks.append(
+                asyncio.create_task(
+                    run_with_logging(self._bind_server),
+                    name="slicer_proxy_bind_server",
+                )
+            )
         for bp in self._bind_proxies:
             self._tasks.append(
                 asyncio.create_task(
@@ -1198,6 +1490,14 @@ class SlicerProxyManager:
         if self._mqtt_proxy:
             await self._mqtt_proxy.stop()
             self._mqtt_proxy = None
+
+        if self._file_transfer_proxy:
+            await self._file_transfer_proxy.stop()
+            self._file_transfer_proxy = None
+
+        if self._bind_server:
+            await self._bind_server.stop()
+            self._bind_server = None
 
         for bp in self._bind_proxies:
             await bp.stop()

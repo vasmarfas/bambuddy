@@ -1567,3 +1567,218 @@ class TestResolveModelCodes:
 
         assert _resolve_printer_model(None) is None
         assert _resolve_printer_model("UnknownModel") is None
+
+
+class TestMqttIpRewrite:
+    """Tests for TLSProxy._rewrite_mqtt_ip() MQTT packet IP rewriting."""
+
+    @staticmethod
+    def _build_mqtt_publish(topic: str, payload: bytes) -> bytes:
+        """Build a minimal MQTT PUBLISH packet."""
+        # PUBLISH fixed header: type 3, no flags
+        topic_bytes = topic.encode("utf-8")
+        # Variable header: topic length (2 bytes) + topic
+        var_header = len(topic_bytes).to_bytes(2, "big") + topic_bytes
+        body = var_header + payload
+
+        # Encode remaining length
+        remaining = len(body)
+        header = bytearray([0x30])  # PUBLISH, QoS 0
+        while True:
+            encoded_byte = remaining % 128
+            remaining //= 128
+            if remaining > 0:
+                encoded_byte |= 0x80
+            header.append(encoded_byte)
+            if remaining == 0:
+                break
+
+        return bytes(header) + body
+
+    @staticmethod
+    def _build_mqtt_pingreq() -> bytes:
+        """Build an MQTT PINGREQ packet (2 bytes, no payload)."""
+        return b"\xc0\x00"
+
+    def test_rewrite_ip_in_publish(self):
+        """IP string in PUBLISH payload is rewritten."""
+        from backend.app.services.virtual_printer.tcp_proxy import TLSProxy
+
+        payload = b'{"rtsp_url":"rtsps://192.168.1.100:322/live"}'
+        packet = self._build_mqtt_publish("device/status", payload)
+
+        result, buf = TLSProxy._rewrite_mqtt_ip(packet, b"192.168.1.100", b"10.0.0.1", bytearray())
+
+        assert b"10.0.0.1" in result
+        assert b"192.168.1.100" not in result
+
+    def test_no_rewrite_when_ip_absent(self):
+        """Packets without the target IP are passed through unchanged."""
+        from backend.app.services.virtual_printer.tcp_proxy import TLSProxy
+
+        payload = b'{"status":"idle"}'
+        packet = self._build_mqtt_publish("device/status", payload)
+
+        result, buf = TLSProxy._rewrite_mqtt_ip(packet, b"192.168.1.100", b"10.0.0.1", bytearray())
+
+        assert result == packet
+
+    def test_non_publish_packets_unchanged(self):
+        """Non-PUBLISH packets (e.g. PINGREQ) are never rewritten."""
+        from backend.app.services.virtual_printer.tcp_proxy import TLSProxy
+
+        pingreq = self._build_mqtt_pingreq()
+        result, buf = TLSProxy._rewrite_mqtt_ip(pingreq, b"192.168.1.100", b"10.0.0.1", bytearray())
+
+        assert result == pingreq
+
+    def test_rewrite_preserves_packet_framing(self):
+        """Rewritten packet has valid MQTT remaining length."""
+        from backend.app.services.virtual_printer.tcp_proxy import TLSProxy
+
+        # Use IPs of different lengths to test length re-encoding
+        old_ip = b"192.168.255.133"  # 15 bytes
+        new_ip = b"10.0.0.1"  # 8 bytes
+
+        payload = b'{"ip":"192.168.255.133"}'
+        packet = self._build_mqtt_publish("device/status", payload)
+
+        result, buf = TLSProxy._rewrite_mqtt_ip(packet, old_ip, new_ip, bytearray())
+
+        # Parse the result to verify framing
+        assert result[0] == 0x30  # PUBLISH header byte
+        # Decode remaining length
+        pos = 1
+        remaining = 0
+        multiplier = 1
+        while True:
+            b = result[pos]
+            pos += 1
+            remaining += (b & 0x7F) * multiplier
+            multiplier *= 128
+            if (b & 0x80) == 0:
+                break
+
+        # Remaining length should match actual data
+        assert pos + remaining == len(result)
+        assert new_ip in result
+
+    def test_incomplete_packet_buffered(self):
+        """Incomplete packet at end of chunk is buffered for next call."""
+        from backend.app.services.virtual_printer.tcp_proxy import TLSProxy
+
+        payload = b'{"ip":"192.168.1.100"}'
+        packet = self._build_mqtt_publish("device/status", payload)
+
+        # Split packet in the middle
+        half = len(packet) // 2
+        chunk1 = packet[:half]
+        chunk2 = packet[half:]
+
+        result1, buf = TLSProxy._rewrite_mqtt_ip(chunk1, b"192.168.1.100", b"10.0.0.1", bytearray())
+        # First chunk should be buffered (incomplete packet)
+        assert len(buf) > 0
+
+        result2, buf = TLSProxy._rewrite_mqtt_ip(chunk2, b"192.168.1.100", b"10.0.0.1", buf)
+        # Second chunk completes the packet, IP should be rewritten
+        combined = result1 + result2
+        assert b"10.0.0.1" in combined
+        assert b"192.168.1.100" not in combined
+
+    def test_multiple_packets_in_one_chunk(self):
+        """Multiple MQTT packets in a single chunk are all processed."""
+        from backend.app.services.virtual_printer.tcp_proxy import TLSProxy
+
+        payload1 = b'{"ip":"192.168.1.100"}'
+        payload2 = b'{"other":"data"}'
+        packet1 = self._build_mqtt_publish("topic1", payload1)
+        packet2 = self._build_mqtt_publish("topic2", payload2)
+
+        combined = packet1 + packet2
+        result, buf = TLSProxy._rewrite_mqtt_ip(combined, b"192.168.1.100", b"10.0.0.1", bytearray())
+
+        assert b"10.0.0.1" in result
+        assert b"192.168.1.100" not in result
+        # Second packet should still be present
+        assert b"other" in result
+
+    def test_extra_replacements(self):
+        """Extra replacement pairs (e.g. integer IP) are also applied."""
+        from backend.app.services.virtual_printer.tcp_proxy import TLSProxy
+
+        payload = b'{"net":{"info":[{"ip":2248124608}]}}'
+        packet = self._build_mqtt_publish("device/status", payload)
+
+        result, buf = TLSProxy._rewrite_mqtt_ip(
+            packet,
+            b"NOMATCH",
+            b"NOREPLACE",
+            bytearray(),
+            extra_replacements=[(b"2248124608", b"285190336")],
+        )
+
+        assert b"285190336" in result
+        assert b"2248124608" not in result
+
+
+class TestIpToLeIntBytes:
+    """Tests for TLSProxy._ip_to_le_int_bytes() integer IP conversion."""
+
+    def test_converts_ip_to_le_int(self):
+        from backend.app.services.virtual_printer.tcp_proxy import TLSProxy
+
+        assert TLSProxy._ip_to_le_int_bytes("192.168.255.133") == b"2248124608"
+        assert TLSProxy._ip_to_le_int_bytes("192.168.255.16") == b"285190336"
+        assert TLSProxy._ip_to_le_int_bytes("10.0.0.1") == b"16777226"
+
+    def test_roundtrip(self):
+        """Verify the integer converts back to the correct IP."""
+        import struct
+
+        from backend.app.services.virtual_printer.tcp_proxy import TLSProxy
+
+        for ip in ["192.168.1.1", "10.0.0.1", "172.16.0.100", "192.168.255.133"]:
+            le_int = int(TLSProxy._ip_to_le_int_bytes(ip))
+            parts = ip.split(".")
+            expected = struct.unpack("<I", bytes(int(p) for p in parts))[0]
+            assert le_int == expected
+
+
+class TestSSDPProxyName:
+    """Tests for SSDPProxy VP name rewriting."""
+
+    @pytest.fixture
+    def ssdp_proxy_with_name(self):
+        from backend.app.services.virtual_printer.ssdp_server import SSDPProxy
+
+        return SSDPProxy(
+            local_interface_ip="192.168.1.100",
+            remote_interface_ip="10.0.0.100",
+            target_printer_ip="192.168.1.50",
+            name="H2D-1 Proxy",
+        )
+
+    @pytest.fixture
+    def ssdp_proxy_without_name(self):
+        from backend.app.services.virtual_printer.ssdp_server import SSDPProxy
+
+        return SSDPProxy(
+            local_interface_ip="192.168.1.100",
+            remote_interface_ip="10.0.0.100",
+            target_printer_ip="192.168.1.50",
+        )
+
+    def test_rewrite_uses_configured_name(self, ssdp_proxy_with_name):
+        """When name is set, DevName is replaced entirely."""
+        packet = b"NOTIFY * HTTP/1.1\r\nLocation: 192.168.1.50\r\nDevName.bambu.com: RealPrinter\r\nDevBind.bambu.com: cloud\r\n\r\n"
+        rewritten = ssdp_proxy_with_name._rewrite_ssdp(packet)
+
+        assert b"DevName.bambu.com: H2D-1 Proxy" in rewritten
+        assert b"RealPrinter" not in rewritten
+
+    def test_rewrite_appends_proxy_without_name(self, ssdp_proxy_without_name):
+        """When no name is set, ' - Proxy' is appended to the real name."""
+        packet = b"NOTIFY * HTTP/1.1\r\nLocation: 192.168.1.50\r\nDevName.bambu.com: RealPrinter\r\nDevBind.bambu.com: cloud\r\n\r\n"
+        rewritten = ssdp_proxy_without_name._rewrite_ssdp(packet)
+
+        assert b"DevName.bambu.com: RealPrinter - Proxy" in rewritten
