@@ -52,7 +52,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { api, discoveryApi, firmwareApi } from '../api/client';
 import { formatDateOnly, formatETA, formatDuration, parseUTCDate } from '../utils/date';
-import type { Printer, PrinterCreate, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment } from '../api/client';
+import type { Printer, PrinterCreate, AMSUnit, DiscoveredPrinter, FirmwareUpdateInfo, FirmwareUploadStatus, LinkedSpoolInfo, SpoolAssignment, HMSError } from '../api/client';
 import { Card, CardContent } from '../components/Card';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
@@ -1160,33 +1160,40 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
     let idle = 0;
     let offline = 0;
     let loading = 0;
+    let problem = 0;
     let nextPrinterName: string | null = null;
     let nextRemainingMin: number | null = null;
     let nextProgress: number = 0;
 
     printers?.forEach((printer) => {
-      const status = queryClient.getQueryData<{ connected: boolean; state: string | null; remaining_time: number | null; progress: number | null }>(['printerStatus', printer.id]);
+      const status = queryClient.getQueryData<{ connected: boolean; state: string | null; remaining_time: number | null; progress: number | null; hms_errors?: HMSError[] }>(['printerStatus', printer.id]);
       if (status === undefined) {
         // Status not yet loaded - don't count as offline yet
         loading++;
       } else if (!status.connected) {
         offline++;
-      } else if (status.state === 'RUNNING') {
-        printing++;
-        if (status.remaining_time != null && status.remaining_time > 0) {
-          if (nextRemainingMin === null || status.remaining_time < nextRemainingMin) {
-            nextRemainingMin = status.remaining_time;
-            nextPrinterName = printer.name;
-            nextProgress = status.progress || 0;
-          }
-        }
       } else {
-        idle++;
+        // Count printers with HMS errors
+        if (status.hms_errors && filterKnownHMSErrors(status.hms_errors).length > 0) {
+          problem++;
+        }
+        if (status.state === 'RUNNING') {
+          printing++;
+          if (status.remaining_time != null && status.remaining_time > 0) {
+            if (nextRemainingMin === null || status.remaining_time < nextRemainingMin) {
+              nextRemainingMin = status.remaining_time;
+              nextPrinterName = printer.name;
+              nextProgress = status.progress || 0;
+            }
+          }
+        } else {
+          idle++;
+        }
       }
     });
 
     return {
-      counts: { printing, idle, offline, loading, total: (printers?.length || 0) },
+      counts: { printing, idle, offline, loading, problem, total: (printers?.length || 0) },
       nextFinish: nextPrinterName && nextRemainingMin ? { name: nextPrinterName, remainingMin: nextRemainingMin, progress: nextProgress } : null,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1215,6 +1222,14 @@ function StatusSummaryBar({ printers }: { printers: Printer[] | undefined }) {
           <div className="w-2 h-2 rounded-full bg-gray-400" />
           <span className="text-bambu-gray">
             <span className="text-white font-medium">{counts.offline}</span> {t('printers.status.offline').toLowerCase()}
+          </span>
+        </div>
+      )}
+      {counts.problem > 0 && (
+        <div className="flex items-center gap-1.5">
+          <div className="w-2 h-2 rounded-full bg-status-error" />
+          <span className="text-bambu-gray">
+            <span className="text-white font-medium">{counts.problem}</span> {t('printers.status.problem').toLowerCase()}
           </span>
         </div>
       )}
@@ -2415,14 +2430,29 @@ function PrinterCard({
                 <div className="flex items-center gap-2">
                   <h3 className={`font-semibold text-white ${getTitleSize()}`}>{printer.name}</h3>
                   {/* Connection indicator dot for compact mode */}
-                  {viewMode === 'compact' && (
-                    <div
-                      className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                        status?.connected ? 'bg-status-ok' : 'bg-status-error'
-                      }`}
-                      title={status?.connected ? t('printers.connection.connected') : t('printers.connection.offline')}
-                    />
-                  )}
+                  {viewMode === 'compact' && (() => {
+                    const hmsErrors = status?.connected && status.hms_errors ? filterKnownHMSErrors(status.hms_errors) : [];
+                    const hasSevere = hmsErrors.some(e => e.severity <= 2);
+                    const hasWarning = hmsErrors.length > 0;
+                    const pipColor = !status?.connected
+                      ? 'bg-status-error'
+                      : hasSevere
+                        ? 'bg-status-error'
+                        : hasWarning
+                          ? 'bg-status-warning'
+                          : 'bg-status-ok';
+                    const pipTitle = !status?.connected
+                      ? t('printers.connection.offline')
+                      : hasWarning
+                        ? `${hmsErrors.length} HMS ${hmsErrors.length === 1 ? 'error' : 'errors'}`
+                        : t('printers.connection.connected');
+                    return (
+                      <div
+                        className={`w-2 h-2 rounded-full flex-shrink-0 ${pipColor}`}
+                        title={pipTitle}
+                      />
+                    );
+                  })()}
                 </div>
                 <p className="text-sm text-bambu-gray">
                   {printer.model || 'Unknown Model'}
@@ -2720,7 +2750,7 @@ function PrinterCard({
                   <div className="flex items-center gap-2">
                     <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-1.5">
                       <div
-                        className="bg-bambu-green h-1.5 rounded-full transition-all"
+                        className={`${status.state === 'PAUSE' ? 'bg-status-warning' : 'bg-bambu-green'} h-1.5 rounded-full transition-all`}
                         style={{ width: `${status.progress || 0}%` }}
                       />
                     </div>
@@ -2779,7 +2809,7 @@ function PrinterCard({
                           <div className="flex items-center justify-between text-sm">
                             <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2 mr-3">
                               <div
-                                className="bg-bambu-green h-2 rounded-full transition-all"
+                                className={`${status.state === 'PAUSE' ? 'bg-status-warning' : 'bg-bambu-green'} h-2 rounded-full transition-all`}
                                 style={{ width: `${status.progress || 0}%` }}
                               />
                             </div>
@@ -5963,15 +5993,17 @@ export function PrintersPage() {
         });
         break;
       case 'status':
-        // Sort by status: printing > idle > offline
+        // Sort by status: HMS errors > printing > idle > offline
         sorted.sort((a, b) => {
-          const statusA = queryClient.getQueryData<{ connected: boolean; state: string | null }>(['printerStatus', a.id]);
-          const statusB = queryClient.getQueryData<{ connected: boolean; state: string | null }>(['printerStatus', b.id]);
+          const statusA = queryClient.getQueryData<{ connected: boolean; state: string | null; hms_errors?: HMSError[] }>(['printerStatus', a.id]);
+          const statusB = queryClient.getQueryData<{ connected: boolean; state: string | null; hms_errors?: HMSError[] }>(['printerStatus', b.id]);
 
           const getPriority = (s: typeof statusA) => {
-            if (!s?.connected) return 2; // offline
-            if (s.state === 'RUNNING') return 0; // printing
-            return 1; // idle
+            if (!s?.connected) return 3; // offline
+            const hmsErrors = s.hms_errors ? filterKnownHMSErrors(s.hms_errors) : [];
+            if (hmsErrors.length > 0) return 0; // HMS errors - top priority
+            if (s.state === 'RUNNING') return 1; // printing
+            return 2; // idle
           };
 
           return getPriority(statusA) - getPriority(statusB);

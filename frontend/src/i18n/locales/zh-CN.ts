@@ -133,6 +133,7 @@ export default {
       printing: '打印中',
       paused: '已暂停',
       offline: '离线',
+      problem: '故障',
       error: '错误',
       finished: '已完成',
       unknown: '未知',

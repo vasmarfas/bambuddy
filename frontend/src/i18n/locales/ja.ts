@@ -132,6 +132,7 @@ export default {
       printing: '印刷中',
       paused: '一時停止',
       offline: 'オフライン',
+      problem: '問題',
       error: 'エラー',
       finished: '完了',
       unknown: '不明',

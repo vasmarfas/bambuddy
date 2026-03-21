@@ -133,6 +133,7 @@ export default {
       printing: 'In stampa',
       paused: 'In pausa',
       offline: 'Offline',
+      problem: 'Problema',
       error: 'Errore',
       finished: 'Finita',
       unknown: 'Sconosciuto',
