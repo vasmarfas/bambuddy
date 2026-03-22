@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+import shutil
 import socket
 import sys
 import time
@@ -122,6 +123,93 @@ async def scale_poll_loop(config: Config, api: APIClient, shared: dict):
         scale.close()
 
 
+async def _perform_update(config: Config, api: APIClient):
+    """Pull latest code from git, install deps, then exit for systemd restart."""
+    # Determine repo root (install path) — daemon runs from <repo>/spoolbuddy/
+    repo_root = Path(__file__).resolve().parent.parent.parent
+
+    await api.report_update_status(config.device_id, "updating", "Fetching latest code...")
+
+    git_path = shutil.which("git") or "/usr/bin/git"
+    git_config = ["-c", f"safe.directory={repo_root}"]
+
+    # git fetch origin main
+    proc = await asyncio.create_subprocess_exec(
+        git_path,
+        *git_config,
+        "fetch",
+        "origin",
+        "main",
+        cwd=str(repo_root),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        msg = f"git fetch failed: {stderr.decode()[:200]}"
+        logger.error(msg)
+        await api.report_update_status(config.device_id, "error", msg)
+        return
+
+    await api.report_update_status(config.device_id, "updating", "Applying update...")
+
+    # git reset --hard origin/main
+    proc = await asyncio.create_subprocess_exec(
+        git_path,
+        *git_config,
+        "reset",
+        "--hard",
+        "origin/main",
+        cwd=str(repo_root),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        msg = f"git reset failed: {stderr.decode()[:200]}"
+        logger.error(msg)
+        await api.report_update_status(config.device_id, "error", msg)
+        return
+
+    await api.report_update_status(config.device_id, "updating", "Installing dependencies...")
+
+    # pip install daemon deps (use the venv pip)
+    venv_pip = repo_root / "spoolbuddy" / "venv" / "bin" / "pip"
+    pip_packages = ["spidev", "gpiod", "smbus2", "httpx"]
+
+    if venv_pip.exists():
+        proc = await asyncio.create_subprocess_exec(
+            str(venv_pip),
+            "install",
+            "--upgrade",
+            *pip_packages,
+            cwd=str(repo_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            *pip_packages,
+            cwd=str(repo_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    await proc.communicate()
+    if proc.returncode != 0:
+        logger.warning("pip install returned non-zero (continuing anyway)")
+
+    await api.report_update_status(config.device_id, "complete", "Update complete, restarting...")
+    logger.info("Update complete, exiting for systemd restart")
+
+    # Exit cleanly — systemd Restart=always will bring us back with the new code
+    sys.exit(0)
+
+
 async def heartbeat_loop(config: Config, api: APIClient, start_time: float, shared: dict):
     """Periodic heartbeat to keep device registered and pick up commands."""
     display: DisplayControl = shared["display"]
@@ -146,7 +234,15 @@ async def heartbeat_loop(config: Config, api: APIClient, start_time: float, shar
 
         if result:
             cmd = result.get("pending_command")
-            if cmd == "tare":
+            if cmd == "update":
+                logger.info("Update command received, starting update...")
+                try:
+                    await _perform_update(config, api)
+                except Exception as e:
+                    logger.error("Update failed: %s", e)
+                    await api.report_update_status(config.device_id, "error", str(e)[:255])
+                continue
+            elif cmd == "tare":
                 scale = shared.get("scale")
                 if scale and scale.ok:
                     new_offset = await asyncio.to_thread(scale.tare)

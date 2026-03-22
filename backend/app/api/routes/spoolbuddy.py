@@ -68,6 +68,8 @@ def _device_to_response(device: SpoolBuddyDevice) -> DeviceResponse:
         nfc_ok=device.nfc_ok,
         scale_ok=device.scale_ok,
         uptime_s=device.uptime_s,
+        update_status=device.update_status,
+        update_message=device.update_message,
         online=_is_online(device),
         created_at=device.created_at,
         updated_at=device.updated_at,
@@ -634,6 +636,77 @@ async def check_daemon_update(
             "release_url": None,
             "error": str(e),
         }
+
+
+@router.post("/devices/{device_id}/update")
+async def trigger_daemon_update(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+):
+    """Trigger a daemon update on the SpoolBuddy device via pending_command."""
+    result = await db.execute(select(SpoolBuddyDevice).where(SpoolBuddyDevice.device_id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not registered")
+
+    if not _is_online(device):
+        raise HTTPException(status_code=409, detail="Device is offline")
+
+    if device.update_status == "updating":
+        return {"status": "already_updating", "message": "Update already in progress"}
+
+    device.pending_command = "update"
+    device.update_status = "pending"
+    device.update_message = "Waiting for device to pick up update command..."
+    await db.commit()
+
+    logger.info("SpoolBuddy %s: update command queued", device_id)
+    await ws_manager.broadcast(
+        {
+            "type": "spoolbuddy_update",
+            "device_id": device_id,
+            "update_status": "pending",
+        }
+    )
+
+    return {"status": "ok", "message": "Update command sent to device"}
+
+
+@router.post("/devices/{device_id}/update-status")
+async def report_update_status(
+    device_id: str,
+    req: dict,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+):
+    """Daemon reports update progress back to the backend."""
+    result = await db.execute(select(SpoolBuddyDevice).where(SpoolBuddyDevice.device_id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not registered")
+
+    status = req.get("status", "")
+    message = req.get("message", "")
+
+    if status in ("updating", "complete", "error"):
+        device.update_status = status
+        device.update_message = message[:255] if message else None
+        if status == "complete":
+            device.pending_command = None
+        await db.commit()
+
+        logger.info("SpoolBuddy %s: update status=%s msg=%s", device_id, status, message)
+        await ws_manager.broadcast(
+            {
+                "type": "spoolbuddy_update",
+                "device_id": device_id,
+                "update_status": status,
+                "update_message": message,
+            }
+        )
+
+    return {"status": "ok"}
 
 
 # --- Background watchdog ---

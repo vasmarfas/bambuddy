@@ -182,3 +182,9 @@ class APIClient:
                 "message": message,
             },
         )
+
+    async def report_update_status(self, device_id: str, status: str, message: str = "") -> dict | None:
+        return await self._post(
+            f"/devices/{device_id}/update-status",
+            {"status": status, "message": message},
+        )

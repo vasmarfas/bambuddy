@@ -29,6 +29,8 @@ class SpoolBuddyDevice(Base):
     last_seen: Mapped[datetime | None] = mapped_column(DateTime)
     pending_command: Mapped[str | None] = mapped_column(String(50))
     pending_write_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    update_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    update_message: Mapped[str | None] = mapped_column(String(255), nullable=True)
     nfc_ok: Mapped[bool] = mapped_column(Boolean, default=False)
     scale_ok: Mapped[bool] = mapped_column(Boolean, default=False)
     uptime_s: Mapped[int] = mapped_column(Integer, default=0)

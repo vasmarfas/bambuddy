@@ -4983,6 +4983,8 @@ export interface SpoolBuddyDevice {
   nfc_ok: boolean;
   scale_ok: boolean;
   uptime_s: number;
+  update_status: string | null;
+  update_message: string | null;
   online: boolean;
 }
 
@@ -5027,6 +5029,12 @@ export const spoolbuddyApi = {
 
   checkDaemonUpdate: (deviceId: string, includeBeta?: boolean) =>
     request<DaemonUpdateCheck>(`/spoolbuddy/devices/${deviceId}/update-check?include_beta=${includeBeta ?? false}`),
+
+  triggerUpdate: (deviceId: string) =>
+    request<{ status: string; message: string }>(`/spoolbuddy/devices/${deviceId}/update`, {
+      method: 'POST',
+      body: '{}',
+    }),
 
   writeTag: (deviceId: string, spoolId: number) =>
     request<{ status: string }>('/spoolbuddy/nfc/write-tag', {

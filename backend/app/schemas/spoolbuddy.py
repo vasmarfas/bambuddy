@@ -40,6 +40,8 @@ class DeviceResponse(BaseModel):
     nfc_ok: bool
     scale_ok: bool
     uptime_s: int
+    update_status: str | None = None
+    update_message: str | None = None
     online: bool = False
     created_at: datetime
     updated_at: datetime

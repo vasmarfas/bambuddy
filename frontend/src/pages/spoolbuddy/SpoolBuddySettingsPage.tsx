@@ -503,6 +503,7 @@ function ScaleTab({ device, weight, weightStable, rawAdc }: {
 function UpdatesTab({ device }: { device: SpoolBuddyDevice }) {
   const { t } = useTranslation();
   const [checking, setChecking] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [updateResult, setUpdateResult] = useState<DaemonUpdateCheck | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [includeBeta, setIncludeBeta] = useState(() => {
@@ -512,6 +513,8 @@ function UpdatesTab({ device }: { device: SpoolBuddyDevice }) {
       return false;
     }
   });
+
+  const isUpdating = device.update_status === 'pending' || device.update_status === 'updating';
 
   const toggleBeta = () => {
     const next = !includeBeta;
@@ -539,6 +542,18 @@ function UpdatesTab({ device }: { device: SpoolBuddyDevice }) {
     }
   };
 
+  const applyUpdate = async () => {
+    setApplying(true);
+    setError(null);
+    try {
+      await spoolbuddyApi.triggerUpdate(device.device_id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to trigger update');
+    } finally {
+      setApplying(false);
+    }
+  };
+
   // Show version from device, or from update check result if available
   const displayVersion = device.firmware_version
     || (updateResult?.current_version && updateResult.current_version !== '0.0.0' ? updateResult.current_version : null);
@@ -560,11 +575,50 @@ function UpdatesTab({ device }: { device: SpoolBuddyDevice }) {
         </div>
       </div>
 
+      {/* Update progress (shown when update is in progress) */}
+      {isUpdating && (
+        <div className="bg-zinc-800 rounded-lg p-4">
+          <div className="flex items-center gap-3">
+            <svg className="w-5 h-5 animate-spin text-green-400 flex-shrink-0" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            <div>
+              <p className="text-sm font-medium text-green-300">
+                {t('spoolbuddy.settings.updating', 'Updating...')}
+              </p>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                {device.update_message || t('spoolbuddy.settings.updateWaiting', 'Waiting for device...')}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Update complete */}
+      {device.update_status === 'complete' && (
+        <div className="rounded-lg p-3 text-sm bg-green-900/30 border border-green-800">
+          <div className="flex items-center gap-2">
+            <svg className="w-4 h-4 text-green-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+            <p className="text-green-300">{device.update_message || t('spoolbuddy.settings.updateComplete', 'Update complete!')}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Update error */}
+      {device.update_status === 'error' && (
+        <div className="rounded-lg p-3 text-sm bg-red-900/30 border border-red-800">
+          <p className="text-red-300">{device.update_message || t('spoolbuddy.settings.updateFailed', 'Update failed')}</p>
+        </div>
+      )}
+
       {/* Check for updates */}
       <div className="bg-zinc-800 rounded-lg p-4 space-y-3">
         <button
           onClick={checkForUpdates}
-          disabled={checking}
+          disabled={checking || isUpdating}
           className="w-full px-4 py-2.5 rounded-lg text-sm font-medium bg-zinc-700 text-zinc-200 hover:bg-zinc-600 disabled:opacity-40 transition-colors min-h-[44px] flex items-center justify-center gap-2"
         >
           {checking && (
@@ -591,13 +645,30 @@ function UpdatesTab({ device }: { device: SpoolBuddyDevice }) {
               : 'bg-zinc-700/50'
           }`}>
             {updateResult.update_available ? (
-              <div className="space-y-1">
-                <p className="text-green-300 font-medium">
-                  {t('spoolbuddy.settings.updateAvailable', 'Update available')}: v{updateResult.latest_version}
-                </p>
-                <p className="text-xs text-zinc-400">
-                  {t('spoolbuddy.settings.updateInstructions', 'Update via SSH: run the SpoolBuddy install script to upgrade.')}
-                </p>
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <p className="text-green-300 font-medium">
+                    {t('spoolbuddy.settings.updateAvailable', 'Update available')}: v{updateResult.latest_version}
+                  </p>
+                  <p className="text-xs text-zinc-400">
+                    {displayVersion ? `${displayVersion} → ${updateResult.latest_version}` : ''}
+                  </p>
+                </div>
+                <button
+                  onClick={applyUpdate}
+                  disabled={applying || isUpdating || !device.online}
+                  className="w-full px-4 py-2.5 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-40 transition-colors min-h-[44px] flex items-center justify-center gap-2"
+                >
+                  {applying && (
+                    <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  )}
+                  {!device.online
+                    ? t('spoolbuddy.settings.deviceOffline', 'Device Offline')
+                    : t('spoolbuddy.settings.applyUpdate', 'Apply Update')}
+                </button>
               </div>
             ) : (
               <div className="flex items-center gap-2">
