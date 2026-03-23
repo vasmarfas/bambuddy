@@ -2,7 +2,7 @@
 
 All notable changes to Bambuddy will be documented in this file.
 
-## [0.2.3.b1] - Unreleased
+## [0.2.3b1] - Unreleased
 
 ### Fixed
 - **SpoolBuddy Update Check Always Shows "Up to Date"** — The SpoolBuddy daemon update check compared the device's firmware version against GitHub releases instead of the running Bambuddy backend version. This meant the check could incorrectly report "up to date" even when the daemon was behind. Fixed by comparing directly against `APP_VERSION` from the backend config.
