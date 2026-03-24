@@ -5,6 +5,7 @@ All notable changes to Bambuddy will be documented in this file.
 ## [0.2.3b1] - Unreleased
 
 ### New Features
+- **Auto-Link Untagged Inventory Spools on AMS Insert** ([#538](https://github.com/maziggy/bambuddy/issues/538)) — When a Bambu Lab spool is inserted into the AMS and no existing tag match is found, the system now checks if there is an untagged inventory spool with the same material, subtype, and color. If found, the RFID tag is automatically linked to that existing spool instead of creating a duplicate entry. Uses FIFO ordering (oldest spool first) so spools are consumed in purchase order. Matching is case-insensitive. Requested by @wreuel.
 - **External Folder Mounting for File Manager** ([#124](https://github.com/maziggy/bambuddy/issues/124)) — Host directories (NAS shares, USB drives, network storage) can now be mounted into the File Manager without copying files. Click "Link External" to point at a Docker bind-mounted path. Files are indexed into the database on scan but accessed directly from their original location — nothing is copied. Supports read-only mode (default, blocks uploads/moves/deletes), hidden file filtering, and automatic thumbnail extraction for 3MF, STL, and gcode files. External folders show a distinct icon and info bar with a rescan button. Deleting an external folder only removes the database index, never the actual files. Requested by @S1N4X.
 
 ### Fixed
