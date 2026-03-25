@@ -490,12 +490,15 @@ class PN5180:
 
         # WRITE command: 0xA2 + page + 4 bytes
         self.send_data([0xA2, page] + list(data))
-        time.sleep(0.005)
+        time.sleep(0.010)
 
-        # Check for ACK: NTAG ACK is 4-bit 0x0A
+        # Check for ACK: NTAG ACK is 4-bit 0x0A.
+        # RX_STATUS bits 8:0 = complete bytes, bits 17:9 = extra bits.
+        # A 4-bit ACK reports 0 bytes + 4 bits, so check both fields.
         rx_status = self.read_reg(0x13)
-        rx_len = rx_status & 0x1FF
-        if rx_len < 1:
+        rx_bytes = rx_status & 0x1FF
+        rx_bits = (rx_status >> 9) & 0x1FF
+        if rx_bytes == 0 and rx_bits == 0:
             return False
 
         ack = self.read_data(1)
