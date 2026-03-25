@@ -377,10 +377,9 @@ class PN5180:
         """Read NTAG pages (4 bytes each). No authentication required.
 
         Uses NTAG READ command (0x30) which returns 4 pages (16 bytes) at a time.
-        CRC must be disabled for NTAG reads.
         """
-        # Disable CRC for NTAG
-        self.write_reg_and(0x19, 0xFFFFFFFE)  # TX CRC off
+        # NTAG READ needs TX CRC on (tag expects CRC), RX CRC off (response includes raw CRC bytes we ignore)
+        self.write_reg_or(0x19, 0x01)  # TX CRC on
         self.write_reg_and(0x12, 0xFFFFFFFE)  # RX CRC off
 
         result = bytearray()
@@ -475,7 +474,7 @@ class PN5180:
         """Write 4 bytes to a single NTAG page.
 
         NTAG WRITE command: 0xA2 + page_number + 4 bytes data.
-        CRC disabled (same as reads). Returns True on ACK (0x0A).
+        TX CRC on (tag requires it), RX CRC off (ACK is 4-bit). Returns True on ACK (0x0A).
         """
         if len(data) != 4:
             return False
