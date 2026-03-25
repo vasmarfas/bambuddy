@@ -378,24 +378,35 @@ class PN5180:
 
         Uses NTAG READ command (0x30) which returns 4 pages (16 bytes) at a time.
         """
-        # NTAG READ needs TX CRC on (tag expects CRC), RX CRC off (response includes raw CRC bytes we ignore)
-        self.write_reg_or(0x19, 0x01)  # TX CRC on
-        self.write_reg_and(0x12, 0xFFFFFFFE)  # RX CRC off
-
         result = bytearray()
         pages_read = 0
         while pages_read < num_pages:
+            # CRC and state machine setup per iteration (same as ntag_write_page)
+            self.write_reg_and(0x00, 0xFFFFFFBF)  # Crypto1 off
+            self.write_reg_or(0x19, 0x01)  # TX CRC on
+            self.write_reg_and(0x12, 0xFFFFFFFE)  # RX CRC off
             self.write_reg(0x03, 0xFFFFFFFF)  # Clear IRQs
-            self.set_transceive_mode()
+
+            # Reset state machine: IDLE then TRANSCEIVE
+            sys_cfg = self.read_reg(0x00)
+            self.write_reg(0x00, sys_cfg & 0xFFFFFFF8)  # IDLE
             time.sleep(0.001)
+            self.write_reg(0x00, (sys_cfg & 0xFFFFFFF8) | 0x03)  # TRANSCEIVE
+            time.sleep(0.002)
 
             # READ command: 0x30 + page number -> returns 16 bytes (4 pages)
             self.send_data([0x30, start_page + pages_read])
-            time.sleep(0.005)
+            time.sleep(0.010)
 
             rx_status = self.read_reg(0x13)
             rx_len = rx_status & 0x1FF
             if rx_len < 16:
+                logger.warning(
+                    "NTAG read page %d: rx_len=%d (expected >=16), rx_status=0x%08X",
+                    start_page + pages_read,
+                    rx_len,
+                    rx_status,
+                )
                 return None
 
             data = self.read_data(16)
