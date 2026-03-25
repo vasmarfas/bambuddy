@@ -2857,3 +2857,120 @@ class TestSendDryingCommand:
         # qos may be positional arg [2] or keyword
         qos = call_args.kwargs.get("qos", call_args[0][2] if len(call_args[0]) > 2 else None)
         assert qos == 1
+
+
+class TestStartPrintAmsMapping:
+    """Tests for ams_mapping/ams_mapping2 construction in start_print().
+
+    BambuStudio converts virtual tray IDs (254/255) to -1 in the flat
+    ams_mapping and puts the real external spool info only in ams_mapping2.
+    Passing raw 254/255 in the flat array causes H2D firmware to fail
+    with 0700_8012 "Failed to get AMS mapping table".
+    """
+
+    @pytest.fixture
+    def mqtt_client(self):
+        from unittest.mock import MagicMock
+
+        from backend.app.services.bambu_mqtt import BambuMQTTClient
+
+        client = BambuMQTTClient(
+            ip_address="192.168.1.100",
+            serial_number="TEST123",
+            access_code="12345678",
+        )
+        client._client = MagicMock()
+        client.state.connected = True
+        return client
+
+    def _get_published_command(self, mqtt_client):
+        """Extract the parsed print command from the last publish call."""
+        call_args = mqtt_client._client.publish.call_args
+        return json.loads(call_args[0][1])["print"]
+
+    def test_regular_ams_trays_preserved_in_flat_mapping(self, mqtt_client):
+        """Regular AMS tray IDs pass through unchanged in flat ams_mapping."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[0, 5, 11])
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["ams_mapping"] == [0, 5, 11]
+        assert cmd["ams_mapping2"] == [
+            {"ams_id": 0, "slot_id": 0},
+            {"ams_id": 1, "slot_id": 1},
+            {"ams_id": 2, "slot_id": 3},
+        ]
+
+    def test_unmapped_slots(self, mqtt_client):
+        """Unmapped slots (-1) produce -1 in flat and 0xFF/0xFF in mapping2."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[-1, -1])
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["ams_mapping"] == [-1, -1]
+        assert cmd["ams_mapping2"] == [
+            {"ams_id": 255, "slot_id": 255},
+            {"ams_id": 255, "slot_id": 255},
+        ]
+
+    def test_external_main_nozzle_becomes_minus_one_in_flat(self, mqtt_client):
+        """Virtual tray 255 (main nozzle) must be -1 in flat mapping."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[255])
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["ams_mapping"] == [-1]
+        assert cmd["ams_mapping2"] == [{"ams_id": 255, "slot_id": 0}]
+
+    def test_external_deputy_nozzle_becomes_minus_one_in_flat(self, mqtt_client):
+        """Virtual tray 254 (deputy nozzle) must be -1 in flat mapping."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[254])
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["ams_mapping"] == [-1]
+        assert cmd["ams_mapping2"] == [{"ams_id": 254, "slot_id": 0}]
+
+    def test_h2d_external_spool_mixed_with_ams(self, mqtt_client):
+        """H2D scenario: AMS trays + unmapped + external deputy nozzle."""
+        # Reproduces the exact scenario from issue #797:
+        # 5-slot 3MF, only slot 5 assigned to external deputy nozzle (254)
+        mqtt_client.start_print("test.3mf", ams_mapping=[-1, -1, -1, -1, 255])
+
+        cmd = self._get_published_command(mqtt_client)
+        # Flat mapping: all -1 (external converted, unmapped stay -1)
+        assert cmd["ams_mapping"] == [-1, -1, -1, -1, -1]
+        # Detailed mapping: unmapped slots use 0xFF, external uses real ams_id
+        assert cmd["ams_mapping2"] == [
+            {"ams_id": 255, "slot_id": 255},
+            {"ams_id": 255, "slot_id": 255},
+            {"ams_id": 255, "slot_id": 255},
+            {"ams_id": 255, "slot_id": 255},
+            {"ams_id": 255, "slot_id": 0},
+        ]
+
+    def test_ams_ht_trays_preserved_in_flat_mapping(self, mqtt_client):
+        """AMS-HT tray IDs (>=128) pass through in flat mapping."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[128, 131])
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["ams_mapping"] == [128, 131]
+        assert cmd["ams_mapping2"] == [
+            {"ams_id": 128, "slot_id": 0},
+            {"ams_id": 131, "slot_id": 0},
+        ]
+
+    def test_dual_nozzle_both_external(self, mqtt_client):
+        """Both nozzles using external spools: 254 (deputy) + 255 (main)."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[254, 255])
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["ams_mapping"] == [-1, -1]
+        assert cmd["ams_mapping2"] == [
+            {"ams_id": 254, "slot_id": 0},
+            {"ams_id": 255, "slot_id": 0},
+        ]
+
+    def test_no_ams_mapping_omits_fields(self, mqtt_client):
+        """When ams_mapping is None, neither field is in the command."""
+        mqtt_client.start_print("test.3mf", ams_mapping=None)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert "ams_mapping" not in cmd
+        assert "ams_mapping2" not in cmd

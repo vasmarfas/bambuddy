@@ -2649,25 +2649,36 @@ class BambuMQTTClient:
             # Bambu print command format - matches Bambu Studio's format
             # Build ams_mapping2 from ams_mapping (detailed format with ams_id/slot_id)
             ams_mapping2 = []
+            # BambuStudio converts virtual tray IDs (254/255) to -1 in the flat
+            # ams_mapping and relies on ams_mapping2 for external spool details.
+            # Passing raw 254/255 in the flat array causes H2D firmware to fail
+            # with 0700_8012 "Failed to get AMS mapping table".
+            flat_ams_mapping = []
             if ams_mapping is not None:
                 for tray_id in ams_mapping:
                     # Ensure tray_id is an integer (may be string from JSON)
                     tray_id = int(tray_id) if tray_id is not None else -1
                     if tray_id == -1:
                         # Unmapped filament slot
+                        flat_ams_mapping.append(-1)
                         ams_mapping2.append({"ams_id": 255, "slot_id": 255})
                     elif tray_id >= 254:
-                        # External spool: 254 = main nozzle, 255 = deputy nozzle
-                        # For ams_mapping2, slot_id is 0 (main) or 1 (deputy), not the tray_id
-                        external_slot = 0 if tray_id == 254 else 1
-                        ams_mapping2.append({"ams_id": 255, "slot_id": external_slot})
+                        # External/virtual spool: each virtual tray is its own AMS unit
+                        # with a single slot (slot 0). BambuStudio convention:
+                        #   255 = VIRTUAL_TRAY_MAIN_ID (main/left nozzle)
+                        #   254 = VIRTUAL_TRAY_DEPUTY_ID (deputy/right nozzle)
+                        # Flat mapping must use -1 (firmware doesn't accept raw 254/255).
+                        flat_ams_mapping.append(-1)
+                        ams_mapping2.append({"ams_id": tray_id, "slot_id": 0})
                     elif tray_id >= 128:
                         # AMS-HT: global tray ID IS the ams_id (single tray per unit)
+                        flat_ams_mapping.append(tray_id)
                         ams_mapping2.append({"ams_id": tray_id, "slot_id": 0})
                     else:
                         # Regular AMS tray: Global tray ID = (ams_id * 4) + slot_id
                         ams_id = tray_id // 4
                         slot_id = tray_id % 4
+                        flat_ams_mapping.append(tray_id)
                         ams_mapping2.append({"ams_id": ams_id, "slot_id": slot_id})
 
             # H2D series requires integer values (0/1) for calibration/leveling fields
@@ -2718,7 +2729,7 @@ class BambuMQTTClient:
 
             # Add AMS mapping if provided
             if ams_mapping is not None:
-                command["print"]["ams_mapping"] = ams_mapping
+                command["print"]["ams_mapping"] = flat_ams_mapping
                 command["print"]["ams_mapping2"] = ams_mapping2
 
             logger.info("[%s] Sending print command: %s", self.serial_number, json.dumps(command))
