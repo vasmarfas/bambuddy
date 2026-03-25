@@ -474,7 +474,9 @@ class PN5180:
         """Write 4 bytes to a single NTAG page.
 
         NTAG WRITE command: 0xA2 + page_number + 4 bytes data.
-        TX CRC on (tag requires it), RX CRC off (ACK is 4-bit). Returns True on ACK (0x0A).
+        TX CRC on (tag requires it). Always returns True — the 4-bit ACK
+        cannot be captured by the PN5180, so verification is deferred to
+        ntag_write_pages() which reads back all written data.
         """
         if len(data) != 4:
             return False
@@ -496,28 +498,10 @@ class PN5180:
         self.send_data([0xA2, page] + list(data))
         time.sleep(0.010)
 
-        # Check for ACK: NTAG ACK is 4-bit 0x0A.
-        # RX_STATUS bits 8:0 = complete bytes, bits 17:9 = extra bits.
-        # A 4-bit ACK reports 0 bytes + 4 bits, so check both fields.
-        irq_status = self.read_reg(0x02)
-        rx_status = self.read_reg(0x13)
-        rx_bytes = rx_status & 0x1FF
-        rx_bits = (rx_status >> 9) & 0x1FF
-        logger.debug(
-            "NTAG write page %d: irq=0x%08X, rx_status=0x%08X, rx_bytes=%d, rx_bits=%d",
-            page,
-            irq_status,
-            rx_status,
-            rx_bytes,
-            rx_bits,
-        )
-        if rx_bytes == 0 and rx_bits == 0:
-            logger.warning("NTAG write page %d: no ACK received (irq=0x%08X)", page, irq_status)
-            return False
-
-        ack = self.read_data(1)
-        logger.debug("NTAG write page %d: ACK byte=0x%02X", page, ack[0])
-        return ack[0] == 0x0A
+        # The NTAG ACK is only 4 bits (0x0A). The PN5180 detects SOF but
+        # cannot capture sub-byte frames — RX_IRQ never fires. Skip ACK
+        # checking; ntag_write_pages() verifies by reading back all data.
+        return True
 
     def ntag_write_pages(self, start_page: int, data: bytes) -> bool:
         """Write data to consecutive NTAG pages starting at start_page.
