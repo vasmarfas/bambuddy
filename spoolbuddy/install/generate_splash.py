@@ -18,15 +18,15 @@ from PIL import Image, ImageDraw, ImageFilter
 
 # --- Configuration ---
 WIDTH, HEIGHT = 1024, 600
-BG_CENTER = (30, 30, 30)  # Slightly lighter center
-BG_EDGE = (8, 8, 8)  # Near-black edges
+BG_CENTER = (45, 45, 45)  # Brighter center for more visible gradient
+BG_EDGE = (5, 5, 5)  # Darker edges for stronger contrast
 ACCENT = (0, 174, 66)  # SpoolBuddy green (#00AE42)
-ACCENT_GLOW = (0, 200, 75)  # Slightly brighter for glow core
+ACCENT_GLOW = (0, 220, 85)  # Brighter glow core
 LOGO_SCALE = 0.50  # Scale logo to 50% of canvas width
-GLOW_RADIUS = 80  # Gaussian blur radius for glow
-VIGNETTE_STRENGTH = 0.55  # Edge darkening intensity
+GLOW_RADIUS = 120  # Wider glow spread
+VIGNETTE_STRENGTH = 0.70  # Stronger edge darkening
 RAY_COUNT = 24  # Number of radial light rays
-RAY_OPACITY = 12  # Subtle ray brightness (0-255)
+RAY_OPACITY = 28  # More visible rays (0-255)
 
 
 def radial_gradient(size, center_color, edge_color):
@@ -180,14 +180,14 @@ def generate_splash(output_path):
     print("  Rendering glow effects...")
 
     # Wide diffuse glow
-    glow_wide = create_glow(logo, ACCENT, radius=GLOW_RADIUS, intensity=1.2)
+    glow_wide = create_glow(logo, ACCENT, radius=GLOW_RADIUS, intensity=2.0)
     # Expand glow canvas to full size
     glow_canvas = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     glow_canvas.paste(glow_wide, (logo_x, logo_y), glow_wide)
     canvas = Image.alpha_composite(canvas.convert("RGBA"), glow_canvas)
 
     # Tighter brighter glow
-    glow_tight = create_glow(logo, ACCENT_GLOW, radius=GLOW_RADIUS // 3, intensity=0.8)
+    glow_tight = create_glow(logo, ACCENT_GLOW, radius=GLOW_RADIUS // 3, intensity=1.5)
     glow_canvas2 = Image.new("RGBA", (WIDTH, HEIGHT), (0, 0, 0, 0))
     glow_canvas2.paste(glow_tight, (logo_x, logo_y), glow_tight)
     canvas = Image.alpha_composite(canvas, glow_canvas2)
