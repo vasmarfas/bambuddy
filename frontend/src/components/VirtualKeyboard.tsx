@@ -71,10 +71,12 @@ export function VirtualKeyboard() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (keyboardRef.current as any)?.setInput?.(activeInput.current.value);
 
-    // Add scroll padding then scroll input into view above the keyboard
+    // Add scroll padding then scroll the input's parent card into view above the keyboard
     addScrollPadding(target);
     setTimeout(() => {
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Scroll the closest card/section so the entire group of fields is visible
+      const card = target.closest('.bg-zinc-800, .rounded-lg, [data-vkb-group]') as HTMLElement | null;
+      (card ?? target).scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 100);
   }, [addScrollPadding]);
 
