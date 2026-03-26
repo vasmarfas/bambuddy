@@ -168,7 +168,7 @@ export function SpoolBuddyLayout() {
     <>
       <div
         className="w-screen h-screen bg-bambu-dark text-white flex flex-col overflow-hidden"
-        style={{ ...brightnessStyle, overscrollBehaviorX: 'none' }}
+        style={{ ...brightnessStyle, overscrollBehaviorX: 'none', touchAction: 'pan-y' }}
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
       >
