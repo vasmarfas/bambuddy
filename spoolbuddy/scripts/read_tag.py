@@ -372,36 +372,47 @@ class PN5180:
 
         return self.read_data(16)
 
+    def _ntag_reactivate(self) -> bool:
+        """RF cycle with extended timing for NTAG re-selection between reads."""
+        self.rf_off()
+        time.sleep(0.050)  # 50ms RF gap — NTAG needs longer than MIFARE Classic
+
+        self.write_reg(0x03, 0xFFFFFFFF)  # Clear IRQs
+        self.load_rf_config(0x00, 0x80)  # ISO 14443A
+        time.sleep(0.010)
+
+        self.rf_on()
+        time.sleep(0.050)  # Let tag power up fully
+
+        return self.activate_type_a() is not None
+
     def ntag_read_pages(self, start_page: int, num_pages: int) -> bytes | None:
         """Read NTAG pages (4 bytes each). No authentication required.
 
         Uses NTAG READ command (0x30) which returns 4 pages (16 bytes) at a time.
-        Reads all requested pages in a single activated session — the card must
-        already be selected via activate_type_a() or reactivate_card().
+        The PN5180 cannot issue consecutive NTAG READs in one session — the card
+        stops responding after the first READ. We do a full RF cycle and re-select
+        with extended timing between each 4-page batch.
         """
-        # One-time setup: Crypto1 off, TX CRC on, RX CRC off, IDLE→TRANSCEIVE
-        self.write_reg_and(0x00, 0xFFFFFFBF)  # Crypto1 off
-        self.write_reg_or(0x19, 0x01)  # TX CRC on
-        self.write_reg_and(0x12, 0xFFFFFFFE)  # RX CRC off
-        self.write_reg(0x03, 0xFFFFFFFF)  # Clear IRQs
-
-        sys_cfg = self.read_reg(0x00)
-        self.write_reg(0x00, sys_cfg & 0xFFFFFFF8)  # IDLE
-        time.sleep(0.001)
-        self.write_reg(0x00, (sys_cfg & 0xFFFFFFF8) | 0x03)  # TRANSCEIVE
-        time.sleep(0.002)
-
         result = bytearray()
         pages_read = 0
         while pages_read < num_pages:
             if pages_read > 0:
-                self.write_reg(0x03, 0xFFFFFFFF)  # Clear IRQs
-                # IDLE → TRANSCEIVE to reset state machine
-                sys_cfg = self.read_reg(0x00)
-                self.write_reg(0x00, sys_cfg & 0xFFFFFFF8)
-                time.sleep(0.001)
-                self.write_reg(0x00, (sys_cfg & 0xFFFFFFF8) | 0x03)
-                time.sleep(0.002)
+                if not self._ntag_reactivate():
+                    print(f"    Failed to reactivate card before page {start_page + pages_read}")
+                    return None
+
+            # Setup: Crypto1 off, TX CRC on, RX CRC off, IDLE→TRANSCEIVE
+            self.write_reg_and(0x00, 0xFFFFFFBF)
+            self.write_reg_or(0x19, 0x01)
+            self.write_reg_and(0x12, 0xFFFFFFFE)
+            self.write_reg(0x03, 0xFFFFFFFF)
+
+            sys_cfg = self.read_reg(0x00)
+            self.write_reg(0x00, sys_cfg & 0xFFFFFFF8)  # IDLE
+            time.sleep(0.001)
+            self.write_reg(0x00, (sys_cfg & 0xFFFFFFF8) | 0x03)  # TRANSCEIVE
+            time.sleep(0.002)
 
             # READ command: 0x30 + page → returns 16 bytes (4 pages)
             self.send_data([0x30, start_page + pages_read])
