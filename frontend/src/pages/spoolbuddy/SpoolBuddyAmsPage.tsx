@@ -233,6 +233,32 @@ export function SpoolBuddyAmsPage() {
     trayInfo: { type: string; material?: string; profile?: string; color: string; location: string };
   } | null>(null);
 
+  // Constrain assign-spool modal to viewport on small SpoolBuddy screen
+  useEffect(() => {
+    if (!assignSpoolModal) return;
+    const applyStyles = () => {
+      // The modal's panel is the only element with both 'relative' and 'max-w-2xl' classes inside a z-50 fixed overlay
+      const panels = document.querySelectorAll<HTMLElement>('.fixed .relative');
+      for (const panel of panels) {
+        if (!panel.classList.contains('w-full')) continue;
+        panel.style.maxHeight = '90vh';
+        panel.style.display = 'flex';
+        panel.style.flexDirection = 'column';
+        const children = Array.from(panel.children) as HTMLElement[];
+        if (children.length >= 3) {
+          children[0].style.flexShrink = '0';
+          children[1].style.flex = '1 1 0';
+          children[1].style.minHeight = '0';
+          children[1].style.overflowY = 'auto';
+          children[children.length - 1].style.flexShrink = '0';
+        }
+      }
+    };
+    // Run after React commit + browser paint
+    const raf = requestAnimationFrame(() => setTimeout(applyStyles, 0));
+    return () => cancelAnimationFrame(raf);
+  }, [assignSpoolModal]);
+
   // Link spool modal state (Spoolman)
   const [linkSpoolModal, setLinkSpoolModal] = useState<{
     tagUid: string;
@@ -736,42 +762,19 @@ export function SpoolBuddyAmsPage() {
         );
       })()}
 
-      {/* Assign spool modal (inventory) — ref callback constrains modal to viewport on small SpoolBuddy screen */}
+      {/* Assign spool modal (inventory) */}
       {assignSpoolModal && (
-        <div ref={(el) => {
-          if (!el) return;
-          // Find the modal panel (the relative div inside the fixed overlay)
-          const panel = el.querySelector<HTMLElement>(':scope > div > div.relative');
-          if (panel) {
-            panel.style.maxHeight = '90vh';
-            panel.style.display = 'flex';
-            panel.style.flexDirection = 'column';
-            // Content div is the second child (after header)
-            const children = Array.from(panel.children) as HTMLElement[];
-            // Header (first) and footer (last) stay fixed, content in between scrolls
-            for (let i = 0; i < children.length; i++) {
-              if (i === 0 || i === children.length - 1) {
-                children[i].style.flexShrink = '0';
-              } else if (i === 1) {
-                children[i].style.flex = '1 1 0';
-                children[i].style.minHeight = '0';
-                children[i].style.overflowY = 'auto';
-              }
-            }
-          }
-        }}>
-          <AssignSpoolModal
-            isOpen={!!assignSpoolModal}
-            onClose={() => {
-              setAssignSpoolModal(null);
-              queryClient.invalidateQueries({ queryKey: ['spool-assignments', selectedPrinterId] });
-            }}
-            printerId={assignSpoolModal.printerId}
-            amsId={assignSpoolModal.amsId}
-            trayId={assignSpoolModal.trayId}
-            trayInfo={assignSpoolModal.trayInfo}
-          />
-        </div>
+        <AssignSpoolModal
+          isOpen={!!assignSpoolModal}
+          onClose={() => {
+            setAssignSpoolModal(null);
+            queryClient.invalidateQueries({ queryKey: ['spool-assignments', selectedPrinterId] });
+          }}
+          printerId={assignSpoolModal.printerId}
+          amsId={assignSpoolModal.amsId}
+          trayId={assignSpoolModal.trayId}
+          trayInfo={assignSpoolModal.trayInfo}
+        />
       )}
 
       {/* Link spool modal (Spoolman) */}
