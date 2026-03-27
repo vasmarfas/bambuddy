@@ -226,10 +226,11 @@ async def perform_ssh_update(device_id: str, ip_address: str, install_path: str 
             return
 
         # Step 6: Clear browser cache and restart kiosk
-        # Remove Chromium's Service Worker + cache storage to prevent stale frontend
+        # Remove WPE WebKit and Chromium cache/SW storage to prevent stale frontend
+        # (covers both cog/WPE and legacy Chromium installs)
         await _run_ssh_command(
             ip_address,
-            "sudo find /home -maxdepth 5 -path '*/chromium/Default/Service Worker' -type d -exec rm -rf {} + 2>/dev/null; true",
+            "sudo find /home -maxdepth 5 \\( -path '*/chromium/Default/Service Worker' -o -path '*/.local/share/webkitgtk' -o -path '*/.local/share/cog' \\) -type d -exec rm -rf {} + 2>/dev/null; true",
             private_key,
         )
         rc, _, stderr = await _run_ssh_command(

@@ -913,7 +913,7 @@ strip_packages() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Kiosk Setup (labwc + Chromium + Plymouth splash)
+# Kiosk Setup (labwc + cog/WPE WebKit + Plymouth splash)
 # ─────────────────────────────────────────────────────────────────────────────
 
 setup_kiosk() {
@@ -945,7 +945,7 @@ setup_kiosk() {
         dpkg-divert --local --rename --add /usr/sbin/update-initramfs >/dev/null 2>&1 || true
         ln -sf /bin/true /usr/sbin/update-initramfs
     fi
-    run_with_progress "Installing kiosk packages" apt-get install -y labwc chromium plymouth wlr-randr
+    run_with_progress "Installing kiosk packages" apt-get install -y labwc cog plymouth wlr-randr
     # Restore real update-initramfs
     if dpkg-divert --list /usr/sbin/update-initramfs 2>/dev/null | grep -q local; then
         rm -f /usr/sbin/update-initramfs
@@ -1093,12 +1093,12 @@ EOF
     <default />
   </mouse>
 
-  <!-- Remove window decorations, maximize Chromium, prevent unfullscreen -->
+  <!-- Remove window decorations, maximize browser, prevent unfullscreen -->
   <windowRules>
     <windowRule identifier="*">
       <serverDecoration>no</serverDecoration>
     </windowRule>
-    <windowRule identifier="chromium">
+    <windowRule identifier="cog">
       <skipTaskbar>yes</skipTaskbar>
       <fixedPosition>yes</fixedPosition>
     </windowRule>
@@ -1107,23 +1107,9 @@ EOF
 </labwc_config>
 EOF
 
-        # ── Override Debian/RPi Chromium defaults for kiosk performance ──────
-        cat > /etc/chromium.d/spoolbuddy-kiosk << 'CHROMIUM_EOF'
-# SpoolBuddy kiosk: override system defaults for low-end Pi hardware.
-# Replaces CHROMIUM_FLAGS entirely — system defaults (gpu-rasterization,
-# remote-extensions, pings, media-router) are not needed in kiosk mode.
-CHROMIUM_FLAGS="--disable-gpu-rasterization"
-CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-smooth-scrolling"
-CHROMIUM_FLAGS="$CHROMIUM_FLAGS --enable-low-end-device-mode"
-CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-background-networking"
-CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-dev-shm-usage"
-CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-pings"
-CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-default-browser-check"
-CHROMIUM_FLAGS="$CHROMIUM_FLAGS --show-component-extension-options"
-CHROMIUM_EOF
-        success "Chromium kiosk performance flags installed"
-
         # ── kiosk launcher (dynamic URL from spoolbuddy/.env) ─────────────────
+        # Uses cog (WPE WebKit) — purpose-built for embedded kiosk displays.
+        # Much lower CPU/memory footprint than Chromium on Pi hardware.
         local kiosk_launcher="/usr/local/bin/spoolbuddy-kiosk-launch"
         cat > "$kiosk_launcher" << EOF
 #!/usr/bin/env bash
@@ -1155,12 +1141,7 @@ else
     kiosk_url="\$FALLBACK_URL"
 fi
 
-exec chromium --kiosk --no-first-run --disable-infobars \
-    --disable-session-crashed-bubble --disable-features=TranslateUI \
-    --noerrdialogs --disable-component-update \
-    --overscroll-history-navigation=0 \
-    --ozone-platform=wayland \
-    "\$kiosk_url"
+exec cog --platform=wl "\$kiosk_url"
 EOF
 
         chmod 755 "$kiosk_launcher"
@@ -1176,7 +1157,7 @@ EOF
 # Force 1024x600 (panel doesn't advertise this natively)
 wlr-randr --output HDMI-A-1 --custom-mode 1024x600@60 &
 
-# Launch Chromium via helper that resolves URL from spoolbuddy/.env
+# Launch cog (WPE WebKit) via helper that resolves URL from spoolbuddy/.env
 $kiosk_launcher &
 EOF
 
@@ -1465,7 +1446,7 @@ main() {
     download_spoolbuddy
     echo ""
 
-    # ── Step 3b: Kiosk setup (labwc + Chromium + squeekboard + Plymouth) ──
+    # ── Step 3b: Kiosk setup (labwc + cog/WPE WebKit + Plymouth) ──
     setup_kiosk
     echo ""
 
