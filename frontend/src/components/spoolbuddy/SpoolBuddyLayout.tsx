@@ -180,6 +180,9 @@ export function SpoolBuddyLayout() {
     return () => el.removeEventListener('touchmove', onTouchMove);
   }, []);
 
+  // Track virtual keyboard visibility to hide bottom bars
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+
   // CSS brightness filter (software dimming)
   const brightnessStyle = displayBrightness < 100
     ? { filter: `brightness(${displayBrightness / 100})` } as const
@@ -209,9 +212,9 @@ export function SpoolBuddyLayout() {
           }} />
         </main>
 
-        <SpoolBuddyStatusBar alert={alert} />
-        <SpoolBuddyBottomNav />
-        <VirtualKeyboard />
+        {!keyboardVisible && <SpoolBuddyStatusBar alert={alert} />}
+        {!keyboardVisible && <SpoolBuddyBottomNav />}
+        <VirtualKeyboard onVisibilityChange={setKeyboardVisible} />
       </div>
 
       {/* Screen blank overlay — touch to wake */}
