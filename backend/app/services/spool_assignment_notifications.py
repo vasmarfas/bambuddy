@@ -112,9 +112,7 @@ async def notify_missing_spool_assignments_on_print_start(
     """Send notification when print-start mapping references unassigned trays."""
     explicit_mapping = data.get("ams_mapping")
     explicit_values = (
-        [value for value in explicit_mapping if isinstance(value, int)]
-        if isinstance(explicit_mapping, list)
-        else []
+        [value for value in explicit_mapping if isinstance(value, int)] if isinstance(explicit_mapping, list) else []
     )
     raw_mapping = data.get("raw_data", {}).get("mapping") if isinstance(data.get("raw_data"), dict) else None
     decoded_values = _decode_mqtt_mapping_to_global_trays(raw_mapping)
