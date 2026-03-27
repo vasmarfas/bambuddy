@@ -3662,6 +3662,8 @@ export default {
     autoOnDescription: 'Accendi quando inizia la stampa',
     autoOff: 'Auto Off',
     autoOffDescription: 'Spegni quando la stampa è completata (una tantum)',
+    autoOffPersistent: 'Mantieni attivo',
+    autoOffPersistentDescription: 'Resta attivo tra le stampe invece di una tantum',
     turnOffDelayMode: 'Modalità ritardo spegnimento',
     time: 'Tempo',
     temp: 'Temp',

@@ -3663,6 +3663,8 @@ export default {
     autoOnDescription: 'Allumer au démarrage de l\'impression',
     autoOff: 'Auto Off',
     autoOffDescription: 'Éteindre à la fin de l\'impression (unique)',
+    autoOffPersistent: 'Garder activé',
+    autoOffPersistentDescription: 'Rester activé entre les impressions au lieu d\'une seule fois',
     turnOffDelayMode: 'Mode de délai d\'extinction',
     time: 'Temps',
     temp: 'Temp',

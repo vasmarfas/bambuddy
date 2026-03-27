@@ -3675,6 +3675,8 @@ export default {
     autoOnDescription: '印刷開始時にオンにする',
     autoOff: '自動オフ',
     autoOffDescription: '印刷完了時にオフにする（ワンショット）',
+    autoOffPersistent: '有効のまま維持',
+    autoOffPersistentDescription: 'ワンショットではなく印刷間で有効のまま維持',
     turnOffDelayMode: 'オフ遅延モード',
     time: '時間',
     temp: '温度',

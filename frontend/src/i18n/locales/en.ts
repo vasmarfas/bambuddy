@@ -3676,6 +3676,8 @@ export default {
     autoOnDescription: 'Turn on when print starts',
     autoOff: 'Auto Off',
     autoOffDescription: 'Turn off when print completes (one-shot)',
+    autoOffPersistent: 'Keep Enabled',
+    autoOffPersistentDescription: 'Stay enabled between prints instead of one-shot',
     turnOffDelayMode: 'Turn Off Delay Mode',
     time: 'Time',
     temp: 'Temp',

@@ -346,6 +346,12 @@ async def run_migrations(conn):
     except OperationalError:
         pass  # Already applied
 
+    # Migration: Add auto_off_persistent column to smart_plugs (keep auto-off enabled between prints)
+    try:
+        await conn.execute(text("ALTER TABLE smart_plugs ADD COLUMN auto_off_persistent BOOLEAN DEFAULT 0"))
+    except OperationalError:
+        pass  # Already applied
+
     # Migration: Add AMS alarm notification columns to notification_providers
     try:
         await conn.execute(text("ALTER TABLE notification_providers ADD COLUMN on_ams_humidity_high BOOLEAN DEFAULT 0"))
@@ -597,6 +603,7 @@ async def run_migrations(conn):
                     enabled BOOLEAN NOT NULL DEFAULT 1,
                     auto_on BOOLEAN NOT NULL DEFAULT 1,
                     auto_off BOOLEAN NOT NULL DEFAULT 1,
+                    auto_off_persistent BOOLEAN NOT NULL DEFAULT 0,
                     off_delay_mode VARCHAR(20) NOT NULL DEFAULT 'time',
                     off_delay_minutes INTEGER NOT NULL DEFAULT 5,
                     off_temp_threshold INTEGER NOT NULL DEFAULT 70,
@@ -625,7 +632,8 @@ async def run_migrations(conn):
                 INSERT INTO smart_plugs_new
                 SELECT id, name, ip_address,
                        COALESCE(plug_type, 'tasmota'), ha_entity_id, printer_id,
-                       enabled, auto_on, auto_off, off_delay_mode, off_delay_minutes, off_temp_threshold,
+                       enabled, auto_on, auto_off, COALESCE(auto_off_persistent, 0),
+                       off_delay_mode, off_delay_minutes, off_temp_threshold,
                        username, password, power_alert_enabled, power_alert_high, power_alert_low,
                        power_alert_last_triggered, schedule_enabled, schedule_on_time, schedule_off_time,
                        COALESCE(show_in_switchbar, 0), last_state, last_checked, auto_off_executed,
@@ -894,6 +902,7 @@ async def run_migrations(conn):
                     enabled BOOLEAN NOT NULL DEFAULT 1,
                     auto_on BOOLEAN NOT NULL DEFAULT 1,
                     auto_off BOOLEAN NOT NULL DEFAULT 1,
+                    auto_off_persistent BOOLEAN NOT NULL DEFAULT 0,
                     off_delay_mode VARCHAR(20) NOT NULL DEFAULT 'time',
                     off_delay_minutes INTEGER NOT NULL DEFAULT 5,
                     off_temp_threshold INTEGER NOT NULL DEFAULT 70,
@@ -923,7 +932,8 @@ async def run_migrations(conn):
                 INSERT INTO smart_plugs_temp
                 SELECT id, name, ip_address, plug_type, ha_entity_id, ha_power_entity,
                        ha_energy_today_entity, ha_energy_total_entity, printer_id, enabled,
-                       auto_on, auto_off, off_delay_mode, off_delay_minutes, off_temp_threshold,
+                       auto_on, auto_off, COALESCE(auto_off_persistent, 0),
+                       off_delay_mode, off_delay_minutes, off_temp_threshold,
                        username, password, power_alert_enabled, power_alert_high, power_alert_low,
                        power_alert_last_triggered, schedule_enabled, schedule_on_time, schedule_off_time,
                        show_in_switchbar, last_state, last_checked, auto_off_executed,

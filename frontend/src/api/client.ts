@@ -1074,6 +1074,7 @@ export interface SmartPlug {
   enabled: boolean;
   auto_on: boolean;
   auto_off: boolean;
+  auto_off_persistent: boolean;
   off_delay_mode: 'time' | 'temperature';
   off_delay_minutes: number;
   off_temp_threshold: number;
@@ -1128,6 +1129,7 @@ export interface SmartPlugCreate {
   enabled?: boolean;
   auto_on?: boolean;
   auto_off?: boolean;
+  auto_off_persistent?: boolean;
   off_delay_mode?: 'time' | 'temperature';
   off_delay_minutes?: number;
   off_temp_threshold?: number;
@@ -1174,6 +1176,7 @@ export interface SmartPlugUpdate {
   enabled?: boolean;
   auto_on?: boolean;
   auto_off?: boolean;
+  auto_off_persistent?: boolean;
   off_delay_mode?: 'time' | 'temperature';
   off_delay_minutes?: number;
   off_temp_threshold?: number;

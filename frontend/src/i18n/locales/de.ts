@@ -3671,6 +3671,8 @@ export default {
     autoOnDescription: 'Einschalten wenn Druck startet',
     autoOff: 'Auto Aus',
     autoOffDescription: 'Ausschalten wenn Druck abgeschlossen (einmalig)',
+    autoOffPersistent: 'Aktiviert lassen',
+    autoOffPersistentDescription: 'Zwischen Drucken aktiviert bleiben statt einmalig',
     turnOffDelayMode: 'Ausschaltverzögerungsmodus',
     time: 'Zeit',
     temp: 'Temp',

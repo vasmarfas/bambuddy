@@ -3662,6 +3662,8 @@ export default {
     autoOnDescription: '打印开始时开启',
     autoOff: '自动关闭',
     autoOffDescription: '打印完成时关闭（一次性）',
+    autoOffPersistent: '保持启用',
+    autoOffPersistentDescription: '在打印之间保持启用而非一次性',
     turnOffDelayMode: '关闭延迟模式',
     time: '时间',
     temp: '温度',

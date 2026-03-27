@@ -3662,6 +3662,8 @@ export default {
     autoOnDescription: 'Ligar quando a impressão iniciar',
     autoOff: 'Auto Desligar',
     autoOffDescription: 'Desligar quando a impressão terminar (única vez)',
+    autoOffPersistent: 'Manter ativado',
+    autoOffPersistentDescription: 'Permanecer ativado entre impressões em vez de única vez',
     turnOffDelayMode: 'Modo de atraso para desligar',
     time: 'Tempo',
     temp: 'Temp',
