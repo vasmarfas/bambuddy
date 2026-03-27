@@ -1107,6 +1107,22 @@ EOF
 </labwc_config>
 EOF
 
+        # ── Override Debian/RPi Chromium defaults for kiosk performance ──────
+        cat > /etc/chromium.d/spoolbuddy-kiosk << 'CHROMIUM_EOF'
+# SpoolBuddy kiosk: override system defaults for low-end Pi hardware.
+# Replaces CHROMIUM_FLAGS entirely — system defaults (gpu-rasterization,
+# remote-extensions, pings, media-router) are not needed in kiosk mode.
+CHROMIUM_FLAGS="--disable-gpu-rasterization"
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-smooth-scrolling"
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --enable-low-end-device-mode"
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-background-networking"
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-dev-shm-usage"
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-pings"
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-default-browser-check"
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --show-component-extension-options"
+CHROMIUM_EOF
+        success "Chromium kiosk performance flags installed"
+
         # ── kiosk launcher (dynamic URL from spoolbuddy/.env) ─────────────────
         local kiosk_launcher="/usr/local/bin/spoolbuddy-kiosk-launch"
         cat > "$kiosk_launcher" << EOF
@@ -1144,11 +1160,6 @@ exec chromium --kiosk --no-first-run --disable-infobars \
     --noerrdialogs --disable-component-update \
     --overscroll-history-navigation=0 \
     --ozone-platform=wayland \
-    --disable-gpu-rasterization \
-    --disable-smooth-scrolling \
-    --enable-low-end-device-mode \
-    --disable-background-networking \
-    --disable-dev-shm-usage \
     "\$kiosk_url"
 EOF
 
