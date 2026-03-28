@@ -944,6 +944,29 @@ export default {
       bulkCancelled: '已取消 {{count}} 个项目',
       bulkCancelFailed: '批量取消项目失败',
     },
+    // Timeline view
+    timeline: {
+      listView: '列表',
+      timelineView: '时间线',
+      unassigned: '未分配',
+      noData: '当天没有计划的打印任务',
+      allDoneBy: '所有打印预计在 {{time}} 前完成',
+      staged: '暂存',
+      filterAll: '全部显示',
+      filterPrinting: '打印中',
+      filterQueued: '排队中',
+      time: {
+        anyMoment: '即将完成',
+        minutesLeft: '剩余{{minutes}}分钟',
+        hoursLeft: '剩余{{hours}}小时',
+        hoursMinutesLeft: '剩余{{hours}}小时{{minutes}}分钟',
+      },
+      day: {
+        previous: '前一天',
+        next: '后一天',
+        today: '今天',
+      },
+    },
     // Permissions
     permissions: {
       noStopPrint: '您没有停止打印的权限',

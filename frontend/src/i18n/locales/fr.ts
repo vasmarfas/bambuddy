@@ -944,6 +944,29 @@ export default {
       bulkCancelled: '{{count}} éléments annulés',
       bulkCancelFailed: 'Échec annulation',
     },
+    // Timeline view
+    timeline: {
+      listView: 'Liste',
+      timelineView: 'Chronologie',
+      unassigned: 'Non attribué',
+      noData: 'Aucune impression planifiée pour ce jour',
+      allDoneBy: 'Toutes les impressions terminées vers {{time}}',
+      staged: 'En attente',
+      filterAll: 'Tout afficher',
+      filterPrinting: 'En cours',
+      filterQueued: 'En file',
+      time: {
+        anyMoment: 'imminent',
+        minutesLeft: '{{minutes}}m restantes',
+        hoursLeft: '{{hours}}h restantes',
+        hoursMinutesLeft: '{{hours}}h {{minutes}}m restantes',
+      },
+      day: {
+        previous: 'Jour précédent',
+        next: 'Jour suivant',
+        today: 'Aujourd\'hui',
+      },
+    },
     // Permissions
     permissions: {
       noStopPrint: 'Pas d\'autorisation d\'arrêt',

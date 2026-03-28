@@ -2,7 +2,7 @@
  * Tests for the QueuePage component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
@@ -110,6 +110,13 @@ const mockPrinters = [
 
 describe('QueuePage', () => {
   beforeEach(() => {
+    // Mock localStorage.getItem to return expected defaults for queue page
+    vi.mocked(localStorage.getItem).mockImplementation((key: string) => {
+      if (key === 'queue.historyCollapsed') return 'false'; // expanded
+      if (key === 'queue.viewMode') return 'list';
+      return null;
+    });
+
     // Setup MSW handlers for this test
     server.use(
       http.get('/api/v1/queue/', () => {

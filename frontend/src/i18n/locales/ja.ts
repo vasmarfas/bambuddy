@@ -943,6 +943,29 @@ export default {
       bulkCancelled: '{{count}}件のアイテムをキャンセルしました',
       bulkCancelFailed: 'アイテムのキャンセルに失敗しました',
     },
+    // Timeline view
+    timeline: {
+      listView: 'リスト',
+      timelineView: 'タイムライン',
+      unassigned: '未割当',
+      noData: 'この日の予定された印刷はありません',
+      allDoneBy: 'すべての印刷は {{time}} までに完了予定',
+      staged: 'ステージング',
+      filterAll: 'すべて表示',
+      filterPrinting: '印刷中',
+      filterQueued: '待機中',
+      time: {
+        anyMoment: 'まもなく',
+        minutesLeft: '残り{{minutes}}分',
+        hoursLeft: '残り{{hours}}時間',
+        hoursMinutesLeft: '残り{{hours}}時間{{minutes}}分',
+      },
+      day: {
+        previous: '前日',
+        next: '翌日',
+        today: '今日',
+      },
+    },
     // Permissions
     permissions: {
       noStopPrint: '印刷を停止する権限がありません',

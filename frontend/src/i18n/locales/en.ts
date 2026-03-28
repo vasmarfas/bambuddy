@@ -944,6 +944,29 @@ export default {
       bulkCancelled: 'Cancelled {{count}} item(s)',
       bulkCancelFailed: 'Failed to cancel items',
     },
+    // Timeline view
+    timeline: {
+      listView: 'List',
+      timelineView: 'Timeline',
+      unassigned: 'Unassigned',
+      noData: 'No scheduled prints for this day',
+      allDoneBy: 'All prints estimated done by {{time}}',
+      staged: 'Staged',
+      filterAll: 'Show All',
+      filterPrinting: 'Printing',
+      filterQueued: 'Queued',
+      time: {
+        anyMoment: 'any moment',
+        minutesLeft: '{{minutes}}m left',
+        hoursLeft: '{{hours}}h left',
+        hoursMinutesLeft: '{{hours}}h {{minutes}}m left',
+      },
+      day: {
+        previous: 'Previous day',
+        next: 'Next day',
+        today: 'Today',
+      },
+    },
     // Permissions
     permissions: {
       noStopPrint: 'You do not have permission to stop prints',

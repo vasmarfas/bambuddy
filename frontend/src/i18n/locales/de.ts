@@ -944,6 +944,29 @@ export default {
       bulkCancelled: '{{count}} Element(e) abgebrochen',
       bulkCancelFailed: 'Elemente konnten nicht abgebrochen werden',
     },
+    // Timeline view
+    timeline: {
+      listView: 'Liste',
+      timelineView: 'Zeitstrahl',
+      unassigned: 'Nicht zugewiesen',
+      noData: 'Keine geplanten Drucke für diesen Tag',
+      allDoneBy: 'Alle Drucke voraussichtlich fertig um {{time}}',
+      staged: 'Bereitgestellt',
+      filterAll: 'Alle anzeigen',
+      filterPrinting: 'Druckend',
+      filterQueued: 'Warteschlange',
+      time: {
+        anyMoment: 'jeden Moment',
+        minutesLeft: '{{minutes}}m übrig',
+        hoursLeft: '{{hours}}h übrig',
+        hoursMinutesLeft: '{{hours}}h {{minutes}}m übrig',
+      },
+      day: {
+        previous: 'Vorheriger Tag',
+        next: 'Nächster Tag',
+        today: 'Heute',
+      },
+    },
     // Permissions
     permissions: {
       noStopPrint: 'Sie haben keine Berechtigung, Drucke zu stoppen',

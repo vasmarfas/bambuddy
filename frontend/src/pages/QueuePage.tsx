@@ -48,16 +48,23 @@ import {
   User,
   Pause,
   Weight,
+  ChevronDown,
+  ChevronRight,
+  List,
+  GanttChart,
 } from 'lucide-react';
 import { api } from '../api/client';
 import { type TimeFormat, formatETA, formatDuration, formatRelativeTime, parseUTCDate } from '../utils/date';
 import type { PrintQueueItem, PrintQueueBulkUpdate, Permission } from '../api/client';
-import { Card, CardContent } from '../components/Card';
+import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { PrintModal } from '../components/PrintModal';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { QueueStatsBar } from '../components/QueueStatsBar';
+import { CompactHistoryRow } from '../components/CompactHistoryRow';
+import { QueueTimelineView } from '../components/QueueTimelineView';
 
 function formatWeight(g: number, useKg = false): string {
   if (useKg && g >= 1000) return `${(g / 1000).toFixed(1)}kg`;
@@ -361,6 +368,13 @@ function SortableQueueItem({
       style={style}
       className={`
         group relative bg-bambu-dark-secondary rounded-xl border transition-all duration-200
+        border-l-[3px] ${
+          isPrinting ? 'border-l-blue-500' :
+          isPending ? 'border-l-yellow-500' :
+          item.status === 'completed' ? 'border-l-emerald-500' :
+          item.status === 'failed' ? 'border-l-red-500' :
+          'border-l-gray-500'
+        }
         ${isDragging ? 'opacity-50 scale-[1.02] shadow-xl z-50' : ''}
         ${isPrinting ? 'border-blue-500/30 bg-gradient-to-r from-blue-500/5 to-transparent' : ''}
         ${isSelected && isMobileSelectable ? 'sm:border-bambu-dark-tertiary border-bambu-green/40' : ''}
@@ -698,6 +712,12 @@ export function QueuePage() {
     const saved = localStorage.getItem('queue.pendingSortAsc');
     return saved !== null ? saved === 'true' : true;
   });
+  const [historyCollapsed, setHistoryCollapsed] = useState(() => {
+    return localStorage.getItem('queue.historyCollapsed') !== 'false';
+  });
+  const [viewMode, setViewMode] = useState<'list' | 'timeline'>(() => {
+    return (localStorage.getItem('queue.viewMode') as 'list' | 'timeline') || 'list';
+  });
 
   // Persist sort settings to localStorage
   useEffect(() => {
@@ -715,6 +735,14 @@ export function QueuePage() {
   useEffect(() => {
     localStorage.setItem('queue.pendingSortAsc', String(pendingSortAsc));
   }, [pendingSortAsc]);
+
+  useEffect(() => {
+    localStorage.setItem('queue.historyCollapsed', String(historyCollapsed));
+  }, [historyCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem('queue.viewMode', viewMode);
+  }, [viewMode]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -940,6 +968,22 @@ export function QueuePage() {
     return map;
   }, [activePrinterIds, printerStatusQueries]);
 
+  // Build a map of printer_id -> full status for timeline view
+  const printerStatusMap = useMemo(() => {
+    const map: Record<number, { progress?: number; remaining_time?: number; state?: string }> = {};
+    activePrinterIds.forEach((printerId, index) => {
+      const result = printerStatusQueries[index];
+      if (result?.data) {
+        map[printerId] = {
+          progress: result.data.progress ?? undefined,
+          remaining_time: result.data.remaining_time ?? undefined,
+          state: result.data.state ?? undefined,
+        };
+      }
+    });
+    return map;
+  }, [activePrinterIds, printerStatusQueries]);
+
   const historyItems = useMemo(() => {
     let items = queue?.filter(i => ['completed', 'failed', 'skipped', 'cancelled'].includes(i.status)) || [];
     if (filterLocation) {
@@ -1001,78 +1045,15 @@ export function QueuePage() {
         </div>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3 lg:gap-4 mb-8">
-        <Card className="bg-gradient-to-br from-blue-500/10 to-transparent border-blue-500/20">
-          <CardContent className="p-3 sm:p-4">
-            <div className="flex items-center gap-2 sm:gap-3">
-              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-blue-500/20 flex items-center justify-center shrink-0">
-                <Play className="w-4 h-4 sm:w-5 sm:h-5 text-blue-400" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-xl sm:text-2xl font-bold text-white truncate">{activeItems.length}</p>
-                <p className="text-xs sm:text-sm text-bambu-gray truncate">{t('queue.summary.printing')}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-gradient-to-br from-yellow-500/10 to-transparent border-yellow-500/20">
-          <CardContent className="p-3 sm:p-4">
-            <div className="flex items-center gap-2 sm:gap-3">
-              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-yellow-500/20 flex items-center justify-center shrink-0">
-                <Clock className="w-4 h-4 sm:w-5 sm:h-5 text-yellow-400" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-xl sm:text-2xl font-bold text-white truncate">{pendingItems.length}</p>
-                <p className="text-xs sm:text-sm text-bambu-gray truncate">{t('queue.summary.queued')}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-gradient-to-br from-bambu-green/10 to-transparent border-bambu-green/20">
-          <CardContent className="p-3 sm:p-4">
-            <div className="flex items-center gap-2 sm:gap-3">
-              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-bambu-green/20 flex items-center justify-center shrink-0">
-                <Timer className="w-4 h-4 sm:w-5 sm:h-5 text-bambu-green" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-xl sm:text-2xl font-bold text-white truncate">{formatDuration(totalQueueTime)}</p>
-                <p className="text-xs sm:text-sm text-bambu-gray truncate">{t('queue.summary.totalTime')}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-gradient-to-br from-purple-500/10 to-transparent border-purple-500/20">
-          <CardContent className="p-3 sm:p-4">
-            <div className="flex items-center gap-2 sm:gap-3">
-              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-purple-500/20 flex items-center justify-center shrink-0">
-                <Weight className="w-4 h-4 sm:w-5 sm:h-5 text-purple-500" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-xl sm:text-2xl font-bold text-white truncate">{formatWeight(totalWeight)}</p>
-                <p className="text-xs sm:text-sm text-bambu-gray truncate">{t('queue.summary.totalWeight')}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="col-span-2 sm:col-span-1 bg-gradient-to-br from-gray-500/10 to-transparent border-gray-500/20">
-          <CardContent className="p-3 sm:p-4">
-            <div className="flex items-center gap-2 sm:gap-3">
-              <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-lg bg-gray-500/20 flex items-center justify-center shrink-0">
-                <CheckCircle className="w-4 h-4 sm:w-5 sm:h-5 text-gray-400" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-xl sm:text-2xl font-bold text-white truncate">{historyItems.length}</p>
-                <p className="text-xs sm:text-sm text-bambu-gray truncate">{t('queue.summary.history')}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      {/* Summary Stats */}
+      <QueueStatsBar
+        activeCount={activeItems.length}
+        pendingCount={pendingItems.length}
+        totalTime={totalQueueTime}
+        totalWeight={totalWeight}
+        historyCount={historyItems.length}
+        t={t}
+      />
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2 sm:gap-4 mb-6">
@@ -1137,6 +1118,26 @@ export function QueuePage() {
         )}
       </div>
 
+      {/* View Mode Toggle */}
+      <div className="hidden sm:flex items-center gap-3 mb-6">
+        <div className="flex items-center border border-bambu-dark-tertiary rounded-lg overflow-hidden">
+          <button
+            className={`p-2 transition-colors ${viewMode === 'list' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
+            onClick={() => setViewMode('list')}
+            title={t('queue.timeline.listView')}
+          >
+            <List className="w-4 h-4" />
+          </button>
+          <button
+            className={`p-2 transition-colors ${viewMode === 'timeline' ? 'bg-bambu-green text-white' : 'bg-bambu-dark text-bambu-gray hover:text-white'}`}
+            onClick={() => setViewMode('timeline')}
+            title={t('queue.timeline.timelineView')}
+          >
+            <GanttChart className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
       {isLoading ? (
         <div className="text-center py-12 text-bambu-gray">{t('common.loading')}</div>
       ) : queue?.length === 0 ? (
@@ -1147,6 +1148,21 @@ export function QueuePage() {
             {t('queue.empty.description')}
           </p>
         </Card>
+      ) : viewMode === 'timeline' ? (
+        <QueueTimelineView
+          queueItems={queue || []}
+          printerStatuses={printerStatusMap}
+          onItemClick={(item) => {
+            if (['completed', 'failed', 'skipped', 'cancelled'].includes(item.status)) {
+              setRequeueItem(item);
+            } else if (item.status === 'pending') {
+              setEditItem(item);
+            } else if (item.status === 'printing') {
+              setConfirmAction({ type: 'stop', item });
+            }
+          }}
+          t={t}
+        />
       ) : (
         <div className="space-y-6 sm:space-y-8">
           {/* Active Prints */}
@@ -1301,53 +1317,55 @@ export function QueuePage() {
           {historyItems.length > 0 && (
             <div>
               <div className="flex flex-wrap items-center justify-between gap-2 mb-3 sm:mb-4">
-                <h2 className="text-base sm:text-lg font-semibold text-white flex items-center gap-2">
-                  <CheckCircle className="w-4 h-4 sm:w-5 sm:h-5 text-bambu-gray" />
+                <button
+                  onClick={() => setHistoryCollapsed(!historyCollapsed)}
+                  className="text-base sm:text-lg font-semibold text-white flex items-center gap-2 hover:text-bambu-green transition-colors"
+                >
+                  {historyCollapsed ? <ChevronRight className="w-4 h-4 sm:w-5 sm:h-5" /> : <ChevronDown className="w-4 h-4 sm:w-5 sm:h-5" />}
                   {t('queue.sections.history')}
                   <span className="text-xs sm:text-sm font-normal text-bambu-gray">
                     ({t('queue.itemCount', { count: historyItems.length })})
                   </span>
-                </h2>
-                <div className="flex items-center gap-2">
-                  <select
-                    className="px-2 sm:px-3 py-1.5 text-xs sm:text-sm bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
-                    value={historySortBy}
-                    onChange={(e) => setHistorySortBy(e.target.value as 'date' | 'name' | 'printer')}
-                  >
-                    <option value="date">{t('queue.sort.byDate')}</option>
-                    <option value="name">{t('queue.sort.byName')}</option>
-                    <option value="printer">{t('queue.sort.byPrinter')}</option>
-                  </select>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setHistorySortAsc(!historySortAsc)}
-                    title={historySortAsc ? t('queue.sort.ascendingOldest') : t('queue.sort.descendingNewest')}
-                    className="px-2"
-                  >
-                    {historySortAsc ? <ArrowUp className="w-4 h-4" /> : <ArrowDown className="w-4 h-4" />}
-                  </Button>
+                </button>
+                {!historyCollapsed && (
+                  <div className="flex items-center gap-2">
+                    <select
+                      className="px-2 sm:px-3 py-1.5 text-xs sm:text-sm bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg text-white focus:border-bambu-green focus:outline-none"
+                      value={historySortBy}
+                      onChange={(e) => setHistorySortBy(e.target.value as 'date' | 'name' | 'printer')}
+                    >
+                      <option value="date">{t('queue.sort.byDate')}</option>
+                      <option value="name">{t('queue.sort.byName')}</option>
+                      <option value="printer">{t('queue.sort.byPrinter')}</option>
+                    </select>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setHistorySortAsc(!historySortAsc)}
+                      title={historySortAsc ? t('queue.sort.ascendingOldest') : t('queue.sort.descendingNewest')}
+                      className="px-2"
+                    >
+                      {historySortAsc ? <ArrowUp className="w-4 h-4" /> : <ArrowDown className="w-4 h-4" />}
+                    </Button>
+                  </div>
+                )}
+              </div>
+              {!historyCollapsed && (
+                <div className="space-y-1.5 sm:space-y-2">
+                  {historyItems.slice(0, 50).map((item) => (
+                    <CompactHistoryRow
+                      key={item.id}
+                      item={item}
+                      onRemove={() => setConfirmAction({ type: 'remove', item })}
+                      onRequeue={() => setRequeueItem(item)}
+                      timeFormat={timeFormat}
+                      hasPermission={hasPermission}
+                      canModify={canModify}
+                      t={t}
+                    />
+                  ))}
                 </div>
-              </div>
-              <div className="space-y-2 sm:space-y-3">
-                {historyItems.slice(0, 20).map((item, index) => (
-                  <SortableQueueItem
-                    key={item.id}
-                    item={item}
-                    position={index + 1}
-                    onEdit={() => {}}
-                    onCancel={() => {}}
-                    onRemove={() => setConfirmAction({ type: 'remove', item })}
-                    onStop={() => {}}
-                    onRequeue={() => setRequeueItem(item)}
-                    onStart={() => {}}
-                    timeFormat={timeFormat}
-                    hasPermission={hasPermission}
-                    canModify={canModify}
-                    t={t}
-                  />
-                ))}
-              </div>
+              )}
             </div>
           )}
         </div>

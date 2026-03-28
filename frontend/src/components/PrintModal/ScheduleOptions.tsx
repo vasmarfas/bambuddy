@@ -188,6 +188,15 @@ export function ScheduleOptionsPanel({
               >
                 <Calendar className="w-4 h-4" />
               </button>
+              {/* Hidden datetime-local anchored here so the native picker opens near the date field */}
+              <input
+                ref={hiddenInputRef}
+                type="datetime-local"
+                className="absolute top-0 left-0 w-0 h-0 opacity-0 pointer-events-none"
+                value={options.scheduledTime}
+                onChange={handleCalendarChange}
+                tabIndex={-1}
+              />
             </div>
             {/* Time input */}
             <div className="w-32">
@@ -204,15 +213,6 @@ export function ScheduleOptionsPanel({
               />
             </div>
           </div>
-          {/* Hidden datetime-local for calendar picker */}
-          <input
-            ref={hiddenInputRef}
-            type="datetime-local"
-            className="sr-only"
-            value={options.scheduledTime}
-            onChange={handleCalendarChange}
-            tabIndex={-1}
-          />
           {(!isDateValid || !isTimeValid) && (
             <p className="mt-1 text-xs text-red-400">
               Please enter a valid date and time

@@ -104,7 +104,7 @@ Perfect for remote print farms, traveling makers, or accessing your home printer
 
 ### ⏰ Scheduling & Automation
 - **Background print dispatch** — FTP uploads and print-start commands run in the background with real-time WebSocket progress toasts (per-job upload bars, status badges, cancel button)
-- Print queue with drag-and-drop
+- Print queue with drag-and-drop and timeline schedule view
 - Multi-printer selection (send to multiple printers at once)
 - Staggered batch start (start printers in groups with configurable interval to avoid power spikes)
 - Model-based queue assignment (send to "any X1C" for load balancing) with location filtering
