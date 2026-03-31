@@ -1123,6 +1123,10 @@ export default {
       from: 'From',
       to: 'To',
     },
+    // User filter
+    allUsers: 'All Users',
+    noUser: 'No User (System)',
+    filterByUser: 'Filter by User',
   },
 
   // Maintenance page

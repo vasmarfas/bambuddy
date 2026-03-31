@@ -1123,6 +1123,9 @@ export default {
       from: 'Du',
       to: 'Au',
     },
+    allUsers: 'Tous les utilisateurs',
+    noUser: 'Aucun utilisateur (Système)',
+    filterByUser: 'Filtrer par utilisateur',
   },
 
   // Maintenance page

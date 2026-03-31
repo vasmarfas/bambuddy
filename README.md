@@ -100,6 +100,7 @@ Perfect for remote print farms, traveling makers, or accessing your home printer
 - Print success rates & trends
 - Filament usage tracking
 - Cost analytics & failure analysis
+- Per-user statistics filtering (admin permission gated)
 - CSV/Excel export
 
 ### ⏰ Scheduling & Automation

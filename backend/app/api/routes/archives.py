@@ -33,6 +33,25 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/archives", tags=["archives"])
 
 
+def _validate_user_filter_permission(current_user: User | None, created_by_id: int | None):
+    """Raise 403 if created_by_id filter is used without stats:filter_by_user permission."""
+    if created_by_id is None or current_user is None:
+        return
+    if current_user.is_admin:
+        return
+    if not current_user.has_permission(Permission.STATS_FILTER_BY_USER.value):
+        raise HTTPException(status_code=403, detail="Permission stats:filter_by_user required")
+
+
+def _apply_user_filter(conditions: list, created_by_id: int | None):
+    """Append created_by_id filter to conditions list if specified."""
+    if created_by_id is not None:
+        if created_by_id == -1:
+            conditions.append(PrintArchive.created_by_id.is_(None))
+        else:
+            conditions.append(PrintArchive.created_by_id == created_by_id)
+
+
 def compute_time_accuracy(archive: PrintArchive) -> dict:
     """Compute actual print time and accuracy for an archive.
 
@@ -247,16 +266,18 @@ async def list_archives(
 async def list_archives_slim(
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
+    created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
     limit: int = Query(default=10000, le=50000),
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
 ):
     """Lightweight archive listing for stats/dashboard widgets.
 
     Returns only the fields needed for client-side aggregation,
     skipping duplicate detection, file paths, and extra_data.
     """
+    _validate_user_filter_permission(current_user, created_by_id)
     filters = []
     if date_from:
         dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
@@ -264,6 +285,7 @@ async def list_archives_slim(
     if date_to:
         dt_to = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
         filters.append(PrintArchive.created_at <= dt_to)
+    _apply_user_filter(filters, created_by_id)
 
     query = (
         select(
@@ -448,8 +470,9 @@ async def analyze_failures(
     date_to: date | None = Query(None),
     printer_id: int | None = None,
     project_id: int | None = None,
+    created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
 ):
     """Analyze failure patterns across prints.
 
@@ -460,6 +483,8 @@ async def analyze_failures(
     - Recent failures
     - Weekly trend
     """
+    _validate_user_filter_permission(current_user, created_by_id)
+
     from backend.app.services.failure_analysis import FailureAnalysisService
 
     service = FailureAnalysisService(db)
@@ -469,6 +494,7 @@ async def analyze_failures(
         date_to=date_to,
         printer_id=printer_id,
         project_id=project_id,
+        created_by_id=created_by_id,
     )
 
 
@@ -579,10 +605,13 @@ async def export_stats(
     days: int = 30,
     printer_id: int | None = None,
     project_id: int | None = None,
+    created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
 ):
     """Export statistics summary to CSV or Excel format."""
+    _validate_user_filter_permission(current_user, created_by_id)
+
     from fastapi.responses import StreamingResponse
 
     from backend.app.services.export import ExportService
@@ -597,6 +626,7 @@ async def export_stats(
             days=days,
             printer_id=printer_id,
             project_id=project_id,
+            created_by_id=created_by_id,
         )
     except ImportError as e:
         raise HTTPException(500, str(e))
@@ -612,10 +642,13 @@ async def export_stats(
 async def get_archive_stats(
     date_from: date | None = Query(None, description="Start date (inclusive), YYYY-MM-DD"),
     date_to: date | None = Query(None, description="End date (inclusive), YYYY-MM-DD"),
+    created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
 ):
     """Get statistics across all archives."""
+    _validate_user_filter_permission(current_user, created_by_id)
+
     # Build date filter conditions
     base_conditions = []
     if date_from:
@@ -624,6 +657,7 @@ async def get_archive_stats(
     if date_to:
         dt_to = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
         base_conditions.append(PrintArchive.created_at <= dt_to)
+    _apply_user_filter(base_conditions, created_by_id)
 
     # Total counts
     total_result = await db.execute(select(func.count(PrintArchive.id)).where(*base_conditions))

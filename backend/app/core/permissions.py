@@ -120,6 +120,7 @@ class Permission(StrEnum):
 
     # Stats/Metrics
     STATS_READ = "stats:read"
+    STATS_FILTER_BY_USER = "stats:filter_by_user"
 
     # System Info
     SYSTEM_READ = "system:read"
@@ -264,6 +265,7 @@ PERMISSION_CATEGORIES = {
     "Stats & History": [
         Permission.AMS_HISTORY_READ,
         Permission.STATS_READ,
+        Permission.STATS_FILTER_BY_USER,
     ],
     "System": [
         Permission.SYSTEM_READ,

@@ -158,6 +158,7 @@ class ExportService:
         days: int = 30,
         printer_id: int | None = None,
         project_id: int | None = None,
+        created_by_id: int | None = None,
     ) -> tuple[bytes, str, str]:
         """Export statistics summary to CSV or Excel format.
 
@@ -166,6 +167,7 @@ class ExportService:
             days: Number of days to include in stats
             printer_id: Filter by printer
             project_id: Filter by project
+            created_by_id: Filter by user who created the print (-1 for no user)
 
         Returns:
             Tuple of (file_bytes, filename, content_type)
@@ -178,6 +180,7 @@ class ExportService:
             days=days,
             printer_id=printer_id,
             project_id=project_id,
+            created_by_id=created_by_id,
         )
 
         # Build stats rows

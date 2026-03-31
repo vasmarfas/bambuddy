@@ -1123,6 +1123,9 @@ export default {
       from: '从',
       to: '到',
     },
+    allUsers: '所有用户',
+    noUser: '无用户（系统）',
+    filterByUser: '按用户筛选',
   },
 
   // Maintenance page

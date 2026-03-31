@@ -1123,6 +1123,9 @@ export default {
       from: 'Von',
       to: 'Bis',
     },
+    allUsers: 'Alle Benutzer',
+    noUser: 'Kein Benutzer (System)',
+    filterByUser: 'Nach Benutzer filtern',
   },
 
   // Maintenance page

@@ -2096,7 +2096,7 @@ export type Permission =
   | 'discovery:scan'
   | 'firmware:read' | 'firmware:update'
   | 'ams_history:read'
-  | 'stats:read'
+  | 'stats:read' | 'stats:filter_by_user'
   | 'system:read'
   | 'settings:read' | 'settings:update' | 'settings:backup' | 'settings:restore'
   | 'github:backup' | 'github:restore'
@@ -2614,10 +2614,11 @@ export const api = {
     if (dateTo) params.set('date_to', dateTo);
     return request<Archive[]>(`/archives/?${params}`);
   },
-  getArchivesSlim: (dateFrom?: string, dateTo?: string) => {
+  getArchivesSlim: (dateFrom?: string, dateTo?: string, createdById?: number) => {
     const params = new URLSearchParams();
     if (dateFrom) params.set('date_from', dateFrom);
     if (dateTo) params.set('date_to', dateTo);
+    if (createdById !== undefined) params.set('created_by_id', String(createdById));
     const qs = params.toString();
     return request<ArchiveSlim[]>(`/archives/slim${qs ? `?${qs}` : ''}`);
   },
@@ -2660,10 +2661,11 @@ export const api = {
     request<Archive>(`/archives/${id}/favorite`, { method: 'POST' }),
   deleteArchive: (id: number) =>
     request<void>(`/archives/${id}`, { method: 'DELETE' }),
-  getArchiveStats: (options?: { dateFrom?: string; dateTo?: string }) => {
+  getArchiveStats: (options?: { dateFrom?: string; dateTo?: string; createdById?: number }) => {
     const params = new URLSearchParams();
     if (options?.dateFrom) params.set('date_from', options.dateFrom);
     if (options?.dateTo) params.set('date_to', options.dateTo);
+    if (options?.createdById !== undefined) params.set('created_by_id', String(options.createdById));
     const qs = params.toString();
     return request<ArchiveStats>(`/archives/stats${qs ? `?${qs}` : ''}`);
   },
@@ -2680,13 +2682,14 @@ export const api = {
     }),
   recalculateCosts: () =>
     request<{ message: string; updated: number }>('/archives/recalculate-costs', { method: 'POST' }),
-  getFailureAnalysis: (options?: { days?: number; dateFrom?: string; dateTo?: string; printerId?: number; projectId?: number }) => {
+  getFailureAnalysis: (options?: { days?: number; dateFrom?: string; dateTo?: string; printerId?: number; projectId?: number; createdById?: number }) => {
     const params = new URLSearchParams();
     if (options?.days) params.set('days', String(options.days));
     if (options?.dateFrom) params.set('date_from', options.dateFrom);
     if (options?.dateTo) params.set('date_to', options.dateTo);
     if (options?.printerId) params.set('printer_id', String(options.printerId));
     if (options?.projectId) params.set('project_id', String(options.projectId));
+    if (options?.createdById !== undefined) params.set('created_by_id', String(options.createdById));
     const qs = params.toString();
     return request<FailureAnalysis>(`/archives/analysis/failures${qs ? `?${qs}` : ''}`);
   },
@@ -2739,12 +2742,14 @@ export const api = {
     days?: number;
     printerId?: number;
     projectId?: number;
+    createdById?: number;
   }): Promise<{ blob: Blob; filename: string }> => {
     const params = new URLSearchParams();
     if (options?.format) params.set('format', options.format);
     if (options?.days) params.set('days', String(options.days));
     if (options?.printerId) params.set('printer_id', String(options.printerId));
     if (options?.projectId) params.set('project_id', String(options.projectId));
+    if (options?.createdById !== undefined) params.set('created_by_id', String(options.createdById));
 
     const headers: Record<string, string> = {};
     if (authToken) {

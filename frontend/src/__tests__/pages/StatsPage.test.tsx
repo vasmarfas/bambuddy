@@ -397,4 +397,18 @@ describe('StatsPage', () => {
       });
     });
   });
+
+  describe('user filter', () => {
+    it('does not show user filter dropdown when auth is disabled', async () => {
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Quick Stats')).toBeInTheDocument();
+      });
+
+      // Auth is disabled in our test setup (default), so user filter should not appear
+      // The filter requires authEnabled && hasPermission('stats:filter_by_user')
+      expect(screen.queryByText('All Users')).not.toBeInTheDocument();
+    });
+  });
 });

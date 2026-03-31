@@ -1122,6 +1122,9 @@ export default {
       from: '開始',
       to: '終了',
     },
+    allUsers: '全ユーザー',
+    noUser: 'ユーザーなし（システム）',
+    filterByUser: 'ユーザーでフィルター',
   },
 
   // Maintenance page
