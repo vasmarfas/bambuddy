@@ -2967,6 +2967,42 @@ class TestStartPrintAmsMapping:
             {"ams_id": 255, "slot_id": 0},
         ]
 
+    def test_external_spool_only_sets_use_ams_false(self, mqtt_client):
+        """Single external spool on non-H2D printer sets use_ams=False."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[254], use_ams=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["use_ams"] is False
+
+    def test_all_unmapped_sets_use_ams_false(self, mqtt_client):
+        """All unmapped slots on non-H2D printer sets use_ams=False."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[-1, -1], use_ams=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["use_ams"] is False
+
+    def test_mixed_ams_and_external_keeps_use_ams_true(self, mqtt_client):
+        """AMS tray + external spool keeps use_ams=True."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[0, 254], use_ams=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["use_ams"] is True
+
+    def test_h2d_both_external_keeps_use_ams_true(self, mqtt_client):
+        """H2D with both external spools keeps use_ams=True (nozzle routing)."""
+        mqtt_client.model = "H2D"
+        mqtt_client.start_print("test.3mf", ams_mapping=[254, 255], use_ams=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["use_ams"] is True
+
+    def test_empty_ams_mapping_keeps_use_ams_true(self, mqtt_client):
+        """Empty ams_mapping list does not override use_ams."""
+        mqtt_client.start_print("test.3mf", ams_mapping=[], use_ams=True)
+
+        cmd = self._get_published_command(mqtt_client)
+        assert cmd["use_ams"] is True
+
     def test_no_ams_mapping_omits_fields(self, mqtt_client):
         """When ams_mapping is None, neither field is in the command."""
         mqtt_client.start_print("test.3mf", ams_mapping=None)
