@@ -190,6 +190,17 @@ class AppSettings(BaseModel):
         description="Enable user email notifications for print job events (requires Advanced Authentication)",
     )
 
+    # Default print options
+    default_bed_levelling: bool = Field(default=True, description="Default bed levelling option for new prints")
+    default_flow_cali: bool = Field(default=False, description="Default flow calibration option for new prints")
+    default_vibration_cali: bool = Field(
+        default=True, description="Default vibration calibration option for new prints"
+    )
+    default_layer_inspect: bool = Field(
+        default=False, description="Default first layer inspection option for new prints"
+    )
+    default_timelapse: bool = Field(default=False, description="Default timelapse option for new prints")
+
     # Staggered batch start for multi-printer jobs
     stagger_group_size: int = Field(
         default=2, ge=1, le=50, description="Number of printers to start simultaneously in staggered mode"
@@ -279,6 +290,11 @@ class AppSettingsUpdate(BaseModel):
     prometheus_token: str | None = None
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
     user_notifications_enabled: bool | None = None
+    default_bed_levelling: bool | None = None
+    default_flow_cali: bool | None = None
+    default_vibration_cali: bool | None = None
+    default_layer_inspect: bool | None = None
+    default_timelapse: bool | None = None
     stagger_group_size: int | None = Field(default=None, ge=1, le=50)
     stagger_interval_minutes: int | None = Field(default=None, ge=1, le=60)
     require_plate_clear: bool | None = None

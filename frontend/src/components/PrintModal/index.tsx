@@ -220,6 +220,20 @@ export function PrintModal({
     queryFn: api.getSettings,
   });
 
+  // Sync print option defaults from settings once available
+  const printDefaultsApplied = useRef(false);
+  useEffect(() => {
+    if (!settings || printDefaultsApplied.current || mode === 'edit-queue-item') return;
+    printDefaultsApplied.current = true;
+    setPrintOptions({
+      bed_levelling: settings.default_bed_levelling ?? DEFAULT_PRINT_OPTIONS.bed_levelling,
+      flow_cali: settings.default_flow_cali ?? DEFAULT_PRINT_OPTIONS.flow_cali,
+      vibration_cali: settings.default_vibration_cali ?? DEFAULT_PRINT_OPTIONS.vibration_cali,
+      layer_inspect: settings.default_layer_inspect ?? DEFAULT_PRINT_OPTIONS.layer_inspect,
+      timelapse: settings.default_timelapse ?? DEFAULT_PRINT_OPTIONS.timelapse,
+    });
+  }, [settings, mode]);
+
   // Sync stagger defaults from settings once available
   const staggerDefaultsApplied = useRef(false);
   useEffect(() => {

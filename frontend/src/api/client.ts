@@ -887,6 +887,12 @@ export interface AppSettings {
   low_stock_threshold: number;
   // User email notifications toggle
   user_notifications_enabled: boolean;
+  // Default print options
+  default_bed_levelling: boolean;
+  default_flow_cali: boolean;
+  default_vibration_cali: boolean;
+  default_layer_inspect: boolean;
+  default_timelapse: boolean;
   // Staggered batch start defaults
   stagger_group_size: number;
   stagger_interval_minutes: number;

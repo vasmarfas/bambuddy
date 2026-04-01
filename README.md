@@ -109,6 +109,7 @@ Perfect for remote print farms, traveling makers, or accessing your home printer
 - Print queue with drag-and-drop and timeline schedule view
 - Multi-printer selection (send to multiple printers at once)
 - Staggered batch start (start printers in groups with configurable interval to avoid power spikes — works in both Print and Queue dialogs)
+- Configurable default print options (bed levelling, flow/vibration calibration, first layer inspection, timelapse) in Settings → Workflow
 - Model-based queue assignment (send to "any X1C" for load balancing) with location filtering
 - Filament override for model-based queue (swap filament colors/types before scheduling)
 - Filament validation (only assign to printers with required filaments)

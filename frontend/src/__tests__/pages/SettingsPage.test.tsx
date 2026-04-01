@@ -269,6 +269,41 @@ describe('SettingsPage', () => {
         expect(screen.getByText('Queue Auto-Drying')).toBeInTheDocument();
       });
     });
+
+    it('shows default print options on Workflow tab', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Workflow')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Workflow'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Default Print Options')).toBeInTheDocument();
+        expect(screen.getByText('Bed Levelling')).toBeInTheDocument();
+        expect(screen.getByText('Flow Calibration')).toBeInTheDocument();
+        expect(screen.getByText('Vibration Calibration')).toBeInTheDocument();
+        expect(screen.getByText('First Layer Inspection')).toBeInTheDocument();
+        expect(screen.getByText('Timelapse')).toBeInTheDocument();
+      });
+    });
+
+    it('shows default print options description', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Workflow')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Workflow'));
+
+      await waitFor(() => {
+        expect(screen.getByText(/overridden per print in the print dialog/)).toBeInTheDocument();
+      });
+    });
   });
 
   describe('API Keys tab', () => {

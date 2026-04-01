@@ -475,6 +475,87 @@ class TestSettingsAPI:
         assert response.status_code == 422
 
     # ========================================================================
+    # Default print options tests
+    # ========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_default_print_options_defaults(self, async_client: AsyncClient):
+        """Verify default print options have correct defaults."""
+        response = await async_client.get("/api/v1/settings/")
+        result = response.json()
+
+        assert result["default_bed_levelling"] is True
+        assert result["default_flow_cali"] is False
+        assert result["default_vibration_cali"] is True
+        assert result["default_layer_inspect"] is False
+        assert result["default_timelapse"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_update_default_print_options(self, async_client: AsyncClient):
+        """Verify default print options can be updated."""
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={
+                "default_bed_levelling": False,
+                "default_flow_cali": True,
+                "default_vibration_cali": False,
+                "default_layer_inspect": True,
+                "default_timelapse": True,
+            },
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["default_bed_levelling"] is False
+        assert result["default_flow_cali"] is True
+        assert result["default_vibration_cali"] is False
+        assert result["default_layer_inspect"] is True
+        assert result["default_timelapse"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_default_print_options_persist(self, async_client: AsyncClient):
+        """CRITICAL: Verify default print options persist after update."""
+        await async_client.put(
+            "/api/v1/settings/",
+            json={
+                "default_bed_levelling": False,
+                "default_timelapse": True,
+            },
+        )
+
+        response = await async_client.get("/api/v1/settings/")
+        result = response.json()
+        assert result["default_bed_levelling"] is False
+        assert result["default_timelapse"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_default_print_options_partial_update(self, async_client: AsyncClient):
+        """Verify partial updates don't affect other default print options."""
+        # Set all to non-default
+        await async_client.put(
+            "/api/v1/settings/",
+            json={
+                "default_bed_levelling": False,
+                "default_flow_cali": True,
+            },
+        )
+
+        # Update only one
+        response = await async_client.put(
+            "/api/v1/settings/",
+            json={"default_bed_levelling": True},
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["default_bed_levelling"] is True
+        assert result["default_flow_cali"] is True  # Should remain from previous update
+
+    # ========================================================================
     # Home Assistant environment variable tests
     # ========================================================================
 

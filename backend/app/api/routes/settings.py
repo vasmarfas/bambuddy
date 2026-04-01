@@ -104,6 +104,11 @@ async def get_settings(
                 "queue_drying_block",
                 "ambient_drying_enabled",
                 "require_plate_clear",
+                "default_bed_levelling",
+                "default_flow_cali",
+                "default_vibration_cali",
+                "default_layer_inspect",
+                "default_timelapse",
             ]:
                 settings_dict[setting.key] = setting.value.lower() == "true"
             elif setting.key in [

@@ -772,6 +772,11 @@ export function SettingsPage() {
       settings.prometheus_enabled !== localSettings.prometheus_enabled ||
       settings.prometheus_token !== localSettings.prometheus_token ||
       (settings.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true) ||
+      (settings.default_bed_levelling ?? true) !== (localSettings.default_bed_levelling ?? true) ||
+      (settings.default_flow_cali ?? false) !== (localSettings.default_flow_cali ?? false) ||
+      (settings.default_vibration_cali ?? true) !== (localSettings.default_vibration_cali ?? true) ||
+      (settings.default_layer_inspect ?? false) !== (localSettings.default_layer_inspect ?? false) ||
+      (settings.default_timelapse ?? false) !== (localSettings.default_timelapse ?? false) ||
       (settings.stagger_group_size ?? 2) !== (localSettings.stagger_group_size ?? 2) ||
       (settings.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
       (settings.require_plate_clear ?? true) !== (localSettings.require_plate_clear ?? true);
@@ -848,6 +853,11 @@ export function SettingsPage() {
         prometheus_enabled: localSettings.prometheus_enabled,
         prometheus_token: localSettings.prometheus_token,
         user_notifications_enabled: localSettings.user_notifications_enabled,
+        default_bed_levelling: localSettings.default_bed_levelling,
+        default_flow_cali: localSettings.default_flow_cali,
+        default_vibration_cali: localSettings.default_vibration_cali,
+        default_layer_inspect: localSettings.default_layer_inspect,
+        default_timelapse: localSettings.default_timelapse,
         stagger_group_size: localSettings.stagger_group_size,
         stagger_interval_minutes: localSettings.stagger_interval_minutes,
         require_plate_clear: localSettings.require_plate_clear,
@@ -3340,7 +3350,47 @@ export function SettingsPage() {
       {/* Filament Tab */}
       {/* Queue Tab */}
       {activeTab === 'queue' && localSettings && (
-        <div className="max-w-2xl space-y-6">
+        <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
+          {/* Left Column */}
+          <div className="lg:w-1/2 space-y-6">
+          {/* Default Print Options */}
+          <Card>
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <ListOrdered className="w-4 h-4 text-bambu-green" />
+                {t('settings.defaultPrintOptions', 'Default Print Options')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-xs text-bambu-gray">
+                {t('settings.defaultPrintOptionsDescription', 'Set default values for print options when starting new prints. These can be overridden per print in the print dialog.')}
+              </p>
+              {[
+                { key: 'default_bed_levelling' as const, label: t('settings.defaultBedLevelling', 'Bed Levelling'), desc: t('settings.defaultBedLevellingDesc', 'Auto-level bed before print'), fallback: true },
+                { key: 'default_flow_cali' as const, label: t('settings.defaultFlowCali', 'Flow Calibration'), desc: t('settings.defaultFlowCaliDesc', 'Calibrate extrusion flow'), fallback: false },
+                { key: 'default_vibration_cali' as const, label: t('settings.defaultVibrationCali', 'Vibration Calibration'), desc: t('settings.defaultVibrationCaliDesc', 'Reduce ringing artifacts'), fallback: true },
+                { key: 'default_layer_inspect' as const, label: t('settings.defaultLayerInspect', 'First Layer Inspection'), desc: t('settings.defaultLayerInspectDesc', 'AI inspection of first layer'), fallback: false },
+                { key: 'default_timelapse' as const, label: t('settings.defaultTimelapse', 'Timelapse'), desc: t('settings.defaultTimelapseDesc', 'Record timelapse video'), fallback: false },
+              ].map(({ key, label, desc, fallback }) => (
+                <div key={key} className="flex items-center justify-between">
+                  <div className="flex-1 mr-4">
+                    <p className="text-sm text-white">{label}</p>
+                    <p className="text-xs text-bambu-gray mt-0.5">{desc}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings[key] ?? fallback}
+                      onChange={(e) => updateSetting(key, e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
           {/* Staggered Batch Start */}
           <Card>
             <CardHeader>
@@ -3421,6 +3471,9 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+          </div>
+          {/* Right Column */}
+          <div className="lg:w-1/2 space-y-6">
           {/* Auto-Drying */}
           <Card>
             <CardHeader>
@@ -3580,6 +3633,7 @@ export function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+          </div>
         </div>
       )}
 
