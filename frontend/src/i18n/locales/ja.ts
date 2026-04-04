@@ -499,6 +499,7 @@ export default {
     // HMS errors
     clickToViewHmsErrors: 'クリックしてHMSエラーを表示',
     estimatedCompletion: '完了予定時刻',
+    plateNumber: 'プレート {{number}}',
     slotOptions: 'スロットオプション',
     // AMS hover popup
     amsPopup: {

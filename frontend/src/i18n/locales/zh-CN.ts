@@ -500,6 +500,7 @@ export default {
     // HMS errors
     clickToViewHmsErrors: '点击查看 HMS 错误',
     estimatedCompletion: '预计完成时间',
+    plateNumber: '板 {{number}}',
     slotOptions: '槽位选项',
     // AMS hover popup
     amsPopup: {

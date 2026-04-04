@@ -500,6 +500,7 @@ export default {
     // HMS errors
     clickToViewHmsErrors: 'Cliquez pour voir les erreurs HMS',
     estimatedCompletion: 'Fin estimée',
+    plateNumber: 'Plaque {{number}}',
     slotOptions: 'Options du slot',
     // AMS hover popup
     amsPopup: {

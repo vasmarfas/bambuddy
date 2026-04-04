@@ -9,6 +9,8 @@ All notable changes to Bambuddy will be documented in this file.
 
 ### Improved
 - **Database Engine Info on System Page** — The System Information page now shows the active database engine (SQLite or PostgreSQL) and its version in the Database section, making it easy to verify which backend is in use.
+- **Plate Number in Printer View** ([#881](https://github.com/maziggy/bambuddy/issues/881)) — Printer cards and the stream overlay now show the plate number alongside the filename when printing plate 2+ of a multi-plate 3MF file (e.g. "MyModel — Plate 3"). Single-plate prints are unchanged.
+- **Printer Name in Queue for Model-Based Jobs** ([#881](https://github.com/maziggy/bambuddy/issues/881)) — Queue items assigned to a printer type ("Any P1S") now show the actual printer name once the scheduler assigns a specific printer, instead of continuing to display the generic model target while printing or in history.
 - **REST Smart Plug: Separate Power/Energy URLs and Unit Multipliers** ([#472](https://github.com/maziggy/bambuddy/issues/472)) — REST/Webhook smart plugs can now use individual URLs for power and energy data instead of requiring all values in a single status response. Each value falls back to the shared Status URL when no separate URL is configured, so existing setups work without changes. Added power and energy multipliers for unit conversion (e.g., set energy multiplier to `0.001` to convert Wh to kWh). Useful for platforms like ioBroker that expose each data point as a separate API endpoint.
 
 ### Fixed
