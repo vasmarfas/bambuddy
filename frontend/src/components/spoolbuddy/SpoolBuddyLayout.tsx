@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { SpoolBuddyTopBar } from './SpoolBuddyTopBar';
 import { SpoolBuddyBottomNav } from './SpoolBuddyBottomNav';
 import { SpoolBuddyStatusBar } from './SpoolBuddyStatusBar';
+import { SpoolBuddyQuickMenu } from './SpoolBuddyQuickMenu';
 import { useSpoolBuddyState } from '../../hooks/useSpoolBuddyState';
 import { api, spoolbuddyApi, type Printer, type PrinterStatus } from '../../api/client';
 import { VirtualKeyboard } from '../VirtualKeyboard';
@@ -159,11 +160,24 @@ export function SpoolBuddyLayout() {
     swipeLockedRef.current = false;
   }, []);
   const handleTouchEnd = useCallback((e: React.TouchEvent) => {
-    if (!touchStartRef.current || onlinePrinters.length < 2) return;
+    if (!touchStartRef.current) return;
     const dx = e.changedTouches[0].clientX - touchStartRef.current.x;
     const dy = e.changedTouches[0].clientY - touchStartRef.current.y;
+    const startY = touchStartRef.current.y;
     touchStartRef.current = null;
     swipeLockedRef.current = false;
+
+    // Vertical swipe: open/close quick menu
+    if (Math.abs(dy) >= SWIPE_THRESHOLD && Math.abs(dy) > Math.abs(dx)) {
+      if (dy > 0 && startY < 80) {
+        // Swipe down from top area → open quick menu
+        setQuickMenuOpen(true);
+      }
+      return;
+    }
+
+    // Horizontal swipe: cycle printers
+    if (onlinePrinters.length < 2) return;
     if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dy) > Math.abs(dx)) return;
     const currentIdx = onlinePrinters.findIndex((p: Printer) => p.id === selectedPrinterId);
     const nextIdx = dx < 0
@@ -190,6 +204,9 @@ export function SpoolBuddyLayout() {
 
   // Track virtual keyboard visibility to hide bottom bars
   const [keyboardVisible, setKeyboardVisible] = useState(false);
+
+  // Quick menu (swipe down to open)
+  const [quickMenuOpen, setQuickMenuOpen] = useState(false);
 
   // CSS brightness filter (software dimming)
   const brightnessStyle = displayBrightness < 100
@@ -224,6 +241,14 @@ export function SpoolBuddyLayout() {
         {!keyboardVisible && <SpoolBuddyBottomNav />}
         <VirtualKeyboard onVisibilityChange={setKeyboardVisible} />
       </div>
+
+      {/* Quick menu (swipe down from top) */}
+      <SpoolBuddyQuickMenu
+        isOpen={quickMenuOpen}
+        onClose={() => setQuickMenuOpen(false)}
+        deviceId={device?.device_id ?? null}
+        deviceOnline={effectiveDeviceOnline}
+      />
 
       {/* Screen blank overlay — touch to wake */}
       {blanked && (

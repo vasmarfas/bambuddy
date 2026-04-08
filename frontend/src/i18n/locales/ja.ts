@@ -4724,6 +4724,21 @@ export default {
       spoolCreated: 'スプール作成完了！書込み準備ができました。',
       createFailed: 'スプールの作成に失敗しました',
     },
+    quickMenu: {
+      printerPower: 'プリンター電源',
+      systemControls: 'システム',
+      restartDaemon: 'デーモン再起動',
+      restartBrowser: 'ブラウザ再起動',
+      reboot: '再起動',
+      shutdown: 'シャットダウン',
+      swipeToClose: '下にスワイプして閉じる',
+      confirmTitle: '確認',
+      confirmShutdown: 'SpoolBuddyをシャットダウンしますか？再起動するには物理的なアクセスが必要です。',
+      confirmReboot: 'SpoolBuddyを再起動しますか？',
+      confirmRestartDaemon: 'SpoolBuddyデーモンを再起動しますか？NFCとスケールが一時的に使用できなくなります。',
+      confirmRestartBrowser: 'キオスクブラウザを再起動しますか？画面が一時的に暗くなります。',
+      confirm: '確認',
+    },
   },
 
   bugReport: {

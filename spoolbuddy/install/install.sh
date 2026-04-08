@@ -518,9 +518,11 @@ create_spoolbuddy_user() {
 spoolbuddy ALL=(root) NOPASSWD: /usr/bin/systemctl restart spoolbuddy.service
 spoolbuddy ALL=(root) NOPASSWD: /usr/bin/systemctl restart getty@tty1.service
 spoolbuddy ALL=(root) NOPASSWD: /usr/bin/find /home -maxdepth 5 *
+spoolbuddy ALL=(root) NOPASSWD: /sbin/reboot
+spoolbuddy ALL=(root) NOPASSWD: /sbin/shutdown -h now
 SUDOERS
     chmod 440 /etc/sudoers.d/spoolbuddy
-    success "Sudoers entries created for service and kiosk restart"
+    success "Sudoers entries created for service, kiosk restart, reboot and shutdown"
 }
 
 download_spoolbuddy() {

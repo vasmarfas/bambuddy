@@ -4711,6 +4711,21 @@ export default {
       spoolCreated: 'Bobina criada! Pronto para gravar.',
       createFailed: 'Falha ao criar bobina',
     },
+    quickMenu: {
+      printerPower: 'Energia da impressora',
+      systemControls: 'Sistema',
+      restartDaemon: 'Reiniciar daemon',
+      restartBrowser: 'Reiniciar navegador',
+      reboot: 'Reiniciar',
+      shutdown: 'Desligar',
+      swipeToClose: 'Deslize para baixo para fechar',
+      confirmTitle: 'Confirmar',
+      confirmShutdown: 'Tem certeza de que deseja desligar o SpoolBuddy? Você precisará de acesso físico para ligá-lo novamente.',
+      confirmReboot: 'Tem certeza de que deseja reiniciar o SpoolBuddy?',
+      confirmRestartDaemon: 'Reiniciar o daemon do SpoolBuddy? NFC e balança ficarão temporariamente indisponíveis.',
+      confirmRestartBrowser: 'Reiniciar o navegador kiosk? A tela ficará brevemente preta.',
+      confirm: 'Confirmar',
+    },
   },
 
   bugReport: {

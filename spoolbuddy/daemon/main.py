@@ -343,6 +343,25 @@ async def heartbeat_loop(config: Config, api: APIClient, start_time: float, shar
                         "ndef_data": bytes.fromhex(write_payload["ndef_data_hex"]),
                     }
                     logger.info("Write tag command received for spool %d", write_payload["spool_id"])
+            elif cmd in ("reboot", "shutdown", "restart_daemon", "restart_browser"):
+                logger.info("System command received: %s", cmd)
+                try:
+                    await api.system_command_result(config.device_id, cmd, True, f"Executing {cmd}")
+                except Exception:
+                    pass  # Best effort — we're about to restart/shutdown anyway
+                if cmd == "reboot":
+                    await asyncio.to_thread(subprocess.run, ["sudo", "reboot"], check=False)
+                elif cmd == "shutdown":
+                    await asyncio.to_thread(subprocess.run, ["sudo", "shutdown", "-h", "now"], check=False)
+                elif cmd == "restart_daemon":
+                    await asyncio.to_thread(
+                        subprocess.run, ["sudo", "systemctl", "restart", "spoolbuddy.service"], check=False
+                    )
+                elif cmd == "restart_browser":
+                    await asyncio.to_thread(
+                        subprocess.run, ["sudo", "systemctl", "restart", "getty@tty1.service"], check=False
+                    )
+                continue
 
             tare = result.get("tare_offset", config.tare_offset)
             cal = result.get("calibration_factor", config.calibration_factor)

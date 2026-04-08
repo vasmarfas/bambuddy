@@ -4740,6 +4740,21 @@ export default {
       spoolCreated: 'Spool created! Ready to write.',
       createFailed: 'Failed to create spool',
     },
+    quickMenu: {
+      printerPower: 'Printer Power',
+      systemControls: 'System',
+      restartDaemon: 'Restart Daemon',
+      restartBrowser: 'Restart Browser',
+      reboot: 'Reboot',
+      shutdown: 'Shutdown',
+      swipeToClose: 'Swipe down to close',
+      confirmTitle: 'Confirm',
+      confirmShutdown: 'Are you sure you want to shut down the SpoolBuddy? You will need physical access to turn it back on.',
+      confirmReboot: 'Are you sure you want to reboot the SpoolBuddy?',
+      confirmRestartDaemon: 'Restart the SpoolBuddy daemon? NFC and scale will be temporarily unavailable.',
+      confirmRestartBrowser: 'Restart the kiosk browser? The display will briefly go blank.',
+      confirm: 'Confirm',
+    },
   },
 
   bugReport: {

@@ -4712,6 +4712,21 @@ export default {
       spoolCreated: 'Bobine créée ! Prêt à écrire.',
       createFailed: 'Impossible de créer la bobine',
     },
+    quickMenu: {
+      printerPower: 'Alimentation imprimante',
+      systemControls: 'Système',
+      restartDaemon: 'Redémarrer le daemon',
+      restartBrowser: 'Redémarrer le navigateur',
+      reboot: 'Redémarrer',
+      shutdown: 'Éteindre',
+      swipeToClose: 'Glisser vers le bas pour fermer',
+      confirmTitle: 'Confirmer',
+      confirmShutdown: 'Êtes-vous sûr de vouloir éteindre le SpoolBuddy ? Vous aurez besoin d\'un accès physique pour le rallumer.',
+      confirmReboot: 'Êtes-vous sûr de vouloir redémarrer le SpoolBuddy ?',
+      confirmRestartDaemon: 'Redémarrer le daemon SpoolBuddy ? Le NFC et la balance seront temporairement indisponibles.',
+      confirmRestartBrowser: 'Redémarrer le navigateur kiosque ? L\'écran sera brièvement noir.',
+      confirm: 'Confirmer',
+    },
   },
 
   bugReport: {

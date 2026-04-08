@@ -4711,6 +4711,21 @@ export default {
       spoolCreated: 'Bobina creata! Pronto per la scrittura.',
       createFailed: 'Impossibile creare la bobina',
     },
+    quickMenu: {
+      printerPower: 'Alimentazione stampante',
+      systemControls: 'Sistema',
+      restartDaemon: 'Riavvia daemon',
+      restartBrowser: 'Riavvia browser',
+      reboot: 'Riavvia',
+      shutdown: 'Spegni',
+      swipeToClose: 'Scorri verso il basso per chiudere',
+      confirmTitle: 'Conferma',
+      confirmShutdown: 'Sei sicuro di voler spegnere lo SpoolBuddy? Avrai bisogno di accesso fisico per riaccenderlo.',
+      confirmReboot: 'Sei sicuro di voler riavviare lo SpoolBuddy?',
+      confirmRestartDaemon: 'Riavviare il daemon SpoolBuddy? NFC e bilancia saranno temporaneamente non disponibili.',
+      confirmRestartBrowser: 'Riavviare il browser kiosk? Lo schermo diventerà brevemente nero.',
+      confirm: 'Conferma',
+    },
   },
 
   bugReport: {

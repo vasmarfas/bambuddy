@@ -1037,3 +1037,130 @@ class TestUpdateEndpoints:
         assert msg["type"] == "spoolbuddy_update"
         assert msg["device_id"] == "sb-upd-ws"
         assert msg["update_status"] == "pending"
+
+
+# ============================================================================
+# System command endpoints
+# ============================================================================
+
+
+class TestSystemCommandEndpoints:
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_reboot(self, async_client: AsyncClient, device_factory):
+        await device_factory(device_id="sb-reboot")
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-reboot/system/command",
+            json={"command": "reboot"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "queued"
+        assert data["command"] == "reboot"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_shutdown(self, async_client: AsyncClient, device_factory):
+        await device_factory(device_id="sb-shutdown")
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-shutdown/system/command",
+            json={"command": "shutdown"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "shutdown"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_restart_daemon(self, async_client: AsyncClient, device_factory):
+        await device_factory(device_id="sb-rd")
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-rd/system/command",
+            json={"command": "restart_daemon"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "restart_daemon"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_restart_browser(self, async_client: AsyncClient, device_factory):
+        await device_factory(device_id="sb-rb")
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-rb/system/command",
+            json={"command": "restart_browser"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "restart_browser"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_invalid_command_rejected(self, async_client: AsyncClient, device_factory):
+        await device_factory(device_id="sb-invalid")
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-invalid/system/command",
+            json={"command": "format_disk"},
+        )
+        assert resp.status_code == 400
+        assert "Invalid command" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_command_unknown_device_404(self, async_client: AsyncClient):
+        resp = await async_client.post(
+            f"{API}/devices/ghost/system/command",
+            json={"command": "reboot"},
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_command_offline_device_409(self, async_client: AsyncClient, device_factory):
+        await device_factory(
+            device_id="sb-offline-cmd",
+            last_seen=datetime.now(timezone.utc) - timedelta(seconds=120),
+        )
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-offline-cmd/system/command",
+            json={"command": "reboot"},
+        )
+        assert resp.status_code == 409
+        assert "offline" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_command_sets_pending_command(self, async_client: AsyncClient, device_factory, db_session):
+        device = await device_factory(device_id="sb-pending")
+
+        await async_client.post(
+            f"{API}/devices/sb-pending/system/command",
+            json={"command": "restart_daemon"},
+        )
+
+        await db_session.refresh(device)
+        assert device.pending_command == "restart_daemon"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_heartbeat_clears_system_command(self, async_client: AsyncClient, device_factory):
+        """System commands (reboot/shutdown/restart_*) are fire-and-forget — heartbeat clears them."""
+        await device_factory(device_id="sb-hb-clear")
+
+        # Queue a command
+        await async_client.post(
+            f"{API}/devices/sb-hb-clear/system/command",
+            json={"command": "restart_browser"},
+        )
+
+        # Heartbeat should return the command and clear it
+        resp = await async_client.post(
+            f"{API}/devices/sb-hb-clear/heartbeat",
+            json={"nfc_ok": True, "scale_ok": True, "uptime_s": 100},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["pending_command"] == "restart_browser"

@@ -5267,6 +5267,12 @@ export const spoolbuddyApi = {
       body: '{}',
     }),
 
+  systemCommand: (deviceId: string, command: 'reboot' | 'shutdown' | 'restart_daemon' | 'restart_browser') =>
+    request<{ status: string; command: string }>(`/spoolbuddy/devices/${deviceId}/system/command`, {
+      method: 'POST',
+      body: JSON.stringify({ command }),
+    }),
+
   queueDiagnostics: (deviceId: string, type: 'nfc' | 'scale' | 'read_tag') =>
     request<{ status: string; diagnostic: string; message: string }>(
       `/spoolbuddy/diagnostics/${deviceId}/run?diagnostic=${type}`,

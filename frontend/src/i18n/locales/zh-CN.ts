@@ -4710,6 +4710,21 @@ export default {
       spoolCreated: '耗材已创建！准备写入。',
       createFailed: '创建耗材失败',
     },
+    quickMenu: {
+      printerPower: '打印机电源',
+      systemControls: '系统',
+      restartDaemon: '重启守护进程',
+      restartBrowser: '重启浏览器',
+      reboot: '重启',
+      shutdown: '关机',
+      swipeToClose: '向下滑动关闭',
+      confirmTitle: '确认',
+      confirmShutdown: '确定要关闭SpoolBuddy吗？您需要物理访问才能重新开启。',
+      confirmReboot: '确定要重启SpoolBuddy吗？',
+      confirmRestartDaemon: '重启SpoolBuddy守护进程？NFC和秤将暂时不可用。',
+      confirmRestartBrowser: '重启kiosk浏览器？屏幕将短暂变黑。',
+      confirm: '确认',
+    },
   },
 
   bugReport: {

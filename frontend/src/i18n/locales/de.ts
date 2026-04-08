@@ -4733,6 +4733,21 @@ export default {
       spoolCreated: 'Spule erstellt! Bereit zum Schreiben.',
       createFailed: 'Spule konnte nicht erstellt werden',
     },
+    quickMenu: {
+      printerPower: 'Drucker-Strom',
+      systemControls: 'System',
+      restartDaemon: 'Daemon neustarten',
+      restartBrowser: 'Browser neustarten',
+      reboot: 'Neustart',
+      shutdown: 'Herunterfahren',
+      swipeToClose: 'Nach unten wischen zum Schließen',
+      confirmTitle: 'Bestätigen',
+      confirmShutdown: 'Möchten Sie das SpoolBuddy wirklich herunterfahren? Sie benötigen physischen Zugang, um es wieder einzuschalten.',
+      confirmReboot: 'Möchten Sie das SpoolBuddy wirklich neu starten?',
+      confirmRestartDaemon: 'SpoolBuddy-Daemon neustarten? NFC und Waage sind vorübergehend nicht verfügbar.',
+      confirmRestartBrowser: 'Kiosk-Browser neustarten? Das Display wird kurz schwarz.',
+      confirm: 'Bestätigen',
+    },
   },
 
   bugReport: {

@@ -28,6 +28,7 @@ from backend.app.schemas.spoolbuddy import (
     ScaleReadingRequest,
     SetCalibrationFactorRequest,
     SetTareRequest,
+    SystemCommandRequest,
     SystemCommandResultRequest,
     SystemConfigRequest,
     TagRemovedRequest,
@@ -667,6 +668,38 @@ async def queue_system_config_update(
 
     logger.info("Queued system config update for device %s", device_id)
     return {"status": "queued", "message": "System config update queued"}
+
+
+VALID_SYSTEM_COMMANDS = {"reboot", "shutdown", "restart_daemon", "restart_browser"}
+
+
+@router.post("/devices/{device_id}/system/command")
+async def queue_system_command(
+    device_id: str,
+    req: SystemCommandRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+):
+    """Queue a system command (reboot, shutdown, restart_daemon, restart_browser) for the SpoolBuddy device."""
+    if req.command not in VALID_SYSTEM_COMMANDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid command. Must be one of: {', '.join(sorted(VALID_SYSTEM_COMMANDS))}",
+        )
+
+    result = await db.execute(select(SpoolBuddyDevice).where(SpoolBuddyDevice.device_id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not registered")
+
+    if not _is_online(device):
+        raise HTTPException(status_code=409, detail="Device is offline")
+
+    device.pending_command = req.command
+    await db.commit()
+
+    logger.info("System command queued for device %s: %s", device_id, req.command)
+    return {"status": "queued", "command": req.command}
 
 
 @router.post("/devices/{device_id}/system/command-result")
