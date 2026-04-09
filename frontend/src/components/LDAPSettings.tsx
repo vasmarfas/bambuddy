@@ -24,6 +24,7 @@ interface LDAPFormState {
   ldap_security: string;
   ldap_group_mapping: string;
   ldap_auto_provision: boolean;
+  ldap_default_group: string;
 }
 
 export function LDAPSettings() {
@@ -41,6 +42,7 @@ export function LDAPSettings() {
     ldap_security: 'starttls',
     ldap_group_mapping: '',
     ldap_auto_provision: false,
+    ldap_default_group: '',
   });
 
   // Fetch settings
@@ -73,6 +75,7 @@ export function LDAPSettings() {
         ldap_security: settings.ldap_security || 'starttls',
         ldap_group_mapping: settings.ldap_group_mapping || '',
         ldap_auto_provision: settings.ldap_auto_provision ?? false,
+        ldap_default_group: settings.ldap_default_group || '',
       });
     }
   }, [settings]);
@@ -138,6 +141,7 @@ export function LDAPSettings() {
       ldap_security: form.ldap_security,
       ldap_group_mapping: form.ldap_group_mapping,
       ldap_auto_provision: form.ldap_auto_provision,
+      ldap_default_group: form.ldap_default_group,
     };
     if (form.ldap_bind_password) {
       update.ldap_bind_password = form.ldap_bind_password;
@@ -374,6 +378,26 @@ export function LDAPSettings() {
                       }`}
                     />
                   </button>
+                </div>
+
+                {/* Default Group (fallback for users with no mapped groups) */}
+                <div>
+                  <label className="block text-sm font-medium text-bambu-gray mb-1">
+                    {t('settings.ldap.defaultGroup') || 'Default group'}
+                  </label>
+                  <select
+                    className={inputClasses}
+                    value={form.ldap_default_group}
+                    onChange={e => setForm({ ...form, ldap_default_group: e.target.value })}
+                  >
+                    <option value="">{t('settings.ldap.defaultGroupNone') || '— None (reject login) —'}</option>
+                    {groups.map(g => (
+                      <option key={g.id} value={g.name}>{g.name}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {t('settings.ldap.defaultGroupHint') || 'Fallback group assigned when an LDAP user authenticates but is not listed in any mapped group. Leave empty to leave unmapped users without permissions.'}
+                  </p>
                 </div>
 
                 {/* Group Mapping */}
