@@ -48,6 +48,7 @@ export function PrintModal({
   initialSelectedPrinterIds,
   onClose,
   onSuccess,
+  projectId,
 }: PrintModalProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -654,6 +655,7 @@ export function PrintModal({
         ? new Date(scheduleOptions.scheduledTime).toISOString()
         : undefined,
       ...printOptions,
+      project_id: projectId ?? undefined,
     });
 
     // Model-based assignment
@@ -734,8 +736,11 @@ export function PrintModal({
                   plate_name: selectedPlateName,
                   ams_mapping: printerMapping,
                   ...printOptions,
+                  project_id: projectId,
                 });
               } else {
+                // project_id is intentionally omitted here: reprintArchive targets an existing
+                // archive that already carries its own project association from the original print.
                 await api.reprintArchive(archiveId!, printerId, {
                   plate_id: selectedPlate ?? undefined,
                   plate_name: selectedPlateName,

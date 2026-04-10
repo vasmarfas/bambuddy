@@ -21,6 +21,7 @@ from backend.app.models.library import LibraryFile
 from backend.app.models.print_batch import PrintBatch
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
+from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.print_queue import (
     PrintBatchResponse,
@@ -484,6 +485,12 @@ async def add_to_queue(
                 if plate_time is not None:
                     cached_print_time = plate_time
 
+    # Validate project exists before insert so a bogus ID yields 404, not an FK-constraint 500
+    if data.project_id is not None:
+        project_result = await db.execute(select(Project).where(Project.id == data.project_id))
+        if not project_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Project not found")
+
     ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
     items = []
     for i in range(quantity):
@@ -508,6 +515,7 @@ async def add_to_queue(
             timelapse=data.timelapse,
             use_ams=data.use_ams,
             gcode_injection=data.gcode_injection,
+            project_id=data.project_id,
             position=max_pos + 1 + i,
             status="pending",
             created_by_id=current_user.id if current_user else None,
