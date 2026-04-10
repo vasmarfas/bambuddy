@@ -13,6 +13,7 @@ entries for root). asyncssh does all of its work in-process.
 """
 
 import asyncio
+import getpass
 import logging
 import os
 from pathlib import Path
@@ -27,6 +28,39 @@ logger = logging.getLogger(__name__)
 
 SSH_USER = "spoolbuddy"
 DEFAULT_INSTALL_PATH = "/opt/bambuddy"
+
+
+def _ensure_local_username_env() -> None:
+    """Make `getpass.getuser()` succeed even when the process runs under a UID
+    that is not listed in /etc/passwd.
+
+    asyncssh.connect() unconditionally calls `getpass.getuser()` to resolve
+    the *local* username (used for `~/.ssh/config` host matching, not the
+    remote login name). `getpass.getuser()` reads `LOGNAME`/`USER`/`LNAME`/
+    `USERNAME` first and falls back to `pwd.getpwuid(os.getuid())`. Inside a
+    Docker container with an arbitrary PUID (e.g. 1000 on `python:3.13-slim`,
+    which only has a root passwd entry), none of those env vars are set and
+    the pwd lookup raises `KeyError`, causing asyncssh to abort with
+    "Unknown local username: set one of LOGNAME, USER, LNAME, or USERNAME in
+    the environment".
+
+    If the lookup already works, or the operator has any of those env vars
+    set, this is a no-op. Otherwise we set a harmless `LOGNAME` default so
+    asyncssh can proceed. This only affects the resolution of the *local*
+    username; the SSH login user is always passed explicitly as `SSH_USER`.
+    """
+    try:
+        getpass.getuser()
+        return
+    except KeyError:
+        pass
+
+    if not any(os.environ.get(k) for k in ("LOGNAME", "USER", "LNAME", "USERNAME")):
+        os.environ["LOGNAME"] = "bambuddy"
+        logger.debug("Set LOGNAME=bambuddy for asyncssh (container UID has no /etc/passwd entry)")
+
+
+_ensure_local_username_env()
 
 
 def _get_ssh_key_dir() -> Path:
@@ -139,6 +173,7 @@ async def _run_ssh_command(
                 username=SSH_USER,
                 client_keys=[str(private_key)],
                 known_hosts=None,  # equivalent to StrictHostKeyChecking=no + UserKnownHostsFile=/dev/null
+                config=[],  # do not load ~/.ssh/config — HOME may not resolve under arbitrary Docker PUIDs
                 connect_timeout=10,
             ) as conn:
                 result = await conn.run(command, check=False)
