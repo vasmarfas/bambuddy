@@ -460,6 +460,10 @@ export interface ArchiveStats {
   time_accuracy_by_printer: Record<string, number> | null;
   total_energy_kwh: number;
   total_energy_cost: number;
+  // True when a date-filtered total-consumption query is running on incomplete
+  // snapshot history (e.g. right after upgrade, before hourly snapshots have
+  // a baseline). UI should explain why the number may undercount.
+  energy_data_warming_up?: boolean;
 }
 
 export interface TagInfo {

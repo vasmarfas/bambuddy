@@ -1084,6 +1084,7 @@ export default {
     totalCost: 'Custo Total',
     energyUsed: 'Energia Utilizada',
     energyCost: 'Custo da Energia',
+    energyWarmingUpTooltip: 'O monitoramento de energia ainda está coletando snapshots por hora. Os totais por período ficarão precisos quando houver pelo menos um snapshot antes do intervalo selecionado. Valores iniciais podem ser subestimados.',
     averagePrintTime: 'Tempo Médio de Impressão',
     printsPerDay: 'Impressões por Dia',
     byPrinter: 'Por Impressora',

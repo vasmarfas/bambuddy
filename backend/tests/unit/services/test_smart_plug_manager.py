@@ -314,15 +314,36 @@ class TestSmartPlugManager:
 
     def test_start_scheduler_idempotent(self, manager):
         """Verify starting scheduler twice doesn't create multiple tasks."""
-        mock_task = MagicMock()
-        manager._scheduler_task = mock_task
+        mock_schedule_task = MagicMock()
+        mock_snapshot_task = MagicMock()
+        manager._scheduler_task = mock_schedule_task
+        manager._snapshot_task = mock_snapshot_task
 
-        # Mock _schedule_loop to avoid unawaited coroutine warning (in case it's called)
-        with patch.object(manager, "_schedule_loop") as mock_loop, patch("asyncio.create_task") as mock_create:
+        # Mock the loop coroutines to avoid unawaited coroutine warnings
+        with (
+            patch.object(manager, "_schedule_loop") as mock_loop,
+            patch.object(manager, "_snapshot_loop") as mock_snapshot,
+            patch("asyncio.create_task") as mock_create,
+        ):
             manager.start_scheduler()
 
-            mock_create.assert_not_called()  # Should not create new task
-            mock_loop.assert_not_called()  # Should not call _schedule_loop
+            mock_create.assert_not_called()  # Should not create new tasks
+            mock_loop.assert_not_called()
+            mock_snapshot.assert_not_called()
+
+    def test_stop_scheduler_cancels_snapshot_task(self, manager):
+        """Verify stopping scheduler also cancels the snapshot loop (#941)."""
+        mock_schedule_task = MagicMock()
+        mock_snapshot_task = MagicMock()
+        manager._scheduler_task = mock_schedule_task
+        manager._snapshot_task = mock_snapshot_task
+
+        manager.stop_scheduler()
+
+        mock_schedule_task.cancel.assert_called_once()
+        mock_snapshot_task.cancel.assert_called_once()
+        assert manager._scheduler_task is None
+        assert manager._snapshot_task is None
 
 
 class TestGetPlugsForPrinter:

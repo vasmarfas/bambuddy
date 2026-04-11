@@ -1084,6 +1084,7 @@ export default {
     totalCost: 'Gesamtkosten',
     energyUsed: 'Energieverbrauch',
     energyCost: 'Energiekosten',
+    energyWarmingUpTooltip: 'Die Energieerfassung sammelt noch stündliche Snapshots. Zeitraumwerte werden genau, sobald vor dem gewählten Bereich mindestens ein Snapshot vorliegt. Frühe Werte können zu niedrig sein.',
     averagePrintTime: 'Durchschnittliche Druckzeit',
     printsPerDay: 'Drucke pro Tag',
     byPrinter: 'Nach Drucker',

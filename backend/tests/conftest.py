@@ -85,6 +85,7 @@ async def test_engine():
         settings,
         slot_preset,
         smart_plug,
+        smart_plug_energy_snapshot,  # noqa: F401
         spool,
         spool_assignment,
         spool_catalog,

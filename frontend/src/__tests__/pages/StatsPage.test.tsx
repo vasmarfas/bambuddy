@@ -411,4 +411,55 @@ describe('StatsPage', () => {
       expect(screen.queryByText('All Users')).not.toBeInTheDocument();
     });
   });
+
+  describe('energy warming-up indicator (#941)', () => {
+    it('does not show a warning icon when energy data is available', async () => {
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Energy Used')).toBeInTheDocument();
+      });
+
+      const energyLabel = screen.getByText('Energy Used').closest('div');
+      expect(energyLabel?.querySelector('svg[aria-label]')).toBeNull();
+    });
+
+    it('shows a warning icon with tooltip next to energy stats when warming up', async () => {
+      server.use(
+        http.get('/api/v1/archives/stats', () => {
+          return HttpResponse.json({ ...mockStats, energy_data_warming_up: true });
+        })
+      );
+
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Energy Used')).toBeInTheDocument();
+      });
+
+      // Both Energy Used and Energy Cost labels get a warning icon with the
+      // tooltip accessible via aria-label.
+      const icons = await screen.findAllByLabelText(/still collecting hourly snapshots/i);
+      expect(icons.length).toBe(2);
+    });
+
+    it('does not decorate other stats with the energy warming-up warning', async () => {
+      server.use(
+        http.get('/api/v1/archives/stats', () => {
+          return HttpResponse.json({ ...mockStats, energy_data_warming_up: true });
+        })
+      );
+
+      render(<StatsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Total Prints')).toBeInTheDocument();
+      });
+
+      const totalPrints = screen.getByText('Total Prints').closest('div');
+      expect(totalPrints?.querySelector('svg[aria-label]')).toBeNull();
+      const printTime = screen.getByText('Print Time').closest('div');
+      expect(printTime?.querySelector('svg[aria-label]')).toBeNull();
+    });
+  });
 });

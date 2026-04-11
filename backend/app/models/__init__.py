@@ -19,6 +19,7 @@ from backend.app.models.printer import Printer
 from backend.app.models.project import Project
 from backend.app.models.settings import Settings
 from backend.app.models.smart_plug import SmartPlug
+from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.models.spool_catalog import SpoolCatalogEntry
@@ -34,6 +35,7 @@ __all__ = [
     "Filament",
     "Settings",
     "SmartPlug",
+    "SmartPlugEnergySnapshot",
     "MaintenanceType",
     "PrinterMaintenance",
     "MaintenanceHistory",

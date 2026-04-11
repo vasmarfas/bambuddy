@@ -65,6 +65,9 @@ class PrintArchive(Base):
     # Energy tracking
     energy_kwh: Mapped[float | None] = mapped_column(Float)  # Energy consumed in kWh
     energy_cost: Mapped[float | None] = mapped_column(Float)  # Cost of energy consumed
+    # Plug lifetime counter captured at print start; delta at print end becomes energy_kwh.
+    # Persisted so per-print tracking survives backend restarts mid-print (#941).
+    energy_start_kwh: Mapped[float | None] = mapped_column(Float)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

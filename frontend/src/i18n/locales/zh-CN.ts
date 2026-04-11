@@ -1084,6 +1084,7 @@ export default {
     totalCost: '总成本',
     energyUsed: '能耗',
     energyCost: '能源成本',
+    energyWarmingUpTooltip: '能耗追踪正在收集每小时快照。当所选范围之前至少存在一个快照时，时间段合计将变得准确。早期数值可能偏低。',
     averagePrintTime: '平均打印时间',
     printsPerDay: '每日打印次数',
     byPrinter: '按打印机',

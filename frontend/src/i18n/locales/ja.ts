@@ -1083,6 +1083,7 @@ export default {
     totalCost: '総コスト',
     energyUsed: 'エネルギー使用量',
     energyCost: 'エネルギーコスト',
+    energyWarmingUpTooltip: 'エネルギー追跡は毎時スナップショットを収集中です。選択範囲の前に少なくとも1つのスナップショットが存在すると、期間合計が正確になります。初期値は過小になる場合があります。',
     averagePrintTime: '平均印刷時間',
     printsPerDay: '1日あたりの印刷数',
     byPrinter: 'プリンター別',

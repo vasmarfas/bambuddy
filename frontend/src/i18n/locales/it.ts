@@ -1084,6 +1084,7 @@ export default {
     totalCost: 'Costo totale',
     energyUsed: 'Energia usata',
     energyCost: 'Costo energia',
+    energyWarmingUpTooltip: 'Il tracciamento energia sta ancora raccogliendo snapshot orari. I totali per intervallo diventeranno accurati quando esisterà almeno uno snapshot prima dell’intervallo selezionato. I primi valori potrebbero essere sottostimati.',
     averagePrintTime: 'Tempo medio di stampa',
     printsPerDay: 'Stampe al giorno',
     byPrinter: 'Per stampante',

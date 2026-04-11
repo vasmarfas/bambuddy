@@ -1084,6 +1084,7 @@ export default {
     totalCost: 'Coût total',
     energyUsed: 'Énergie consommée',
     energyCost: 'Coût énergie',
+    energyWarmingUpTooltip: 'Le suivi énergétique collecte encore des instantanés horaires. Les totaux par période deviendront précis dès qu’un instantané existera avant la plage sélectionnée. Les premières valeurs peuvent être sous-estimées.',
     averagePrintTime: 'Temps moyen par impression',
     printsPerDay: 'Impressions par jour',
     byPrinter: 'Par imprimante',

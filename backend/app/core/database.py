@@ -179,6 +179,7 @@ async def init_db():
         settings,
         slot_preset,
         smart_plug,
+        smart_plug_energy_snapshot,
         spool,
         spool_assignment,
         spool_catalog,
@@ -1373,6 +1374,40 @@ async def run_migrations(conn):
     # Migration: Make password_hash nullable for LDAP users (#794)
     if not is_sqlite():
         await _safe_execute(conn, "ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL")
+
+    # Migration: Add energy_start_kwh to print_archives (#941)
+    # Persists the smart plug lifetime counter captured at print start, so per-print
+    # energy tracking survives a backend restart mid-print.
+    await _safe_execute(conn, "ALTER TABLE print_archives ADD COLUMN energy_start_kwh REAL")
+
+    # Migration: Create smart_plug_energy_snapshots table (#941)
+    # Hourly snapshots of each plug's lifetime counter, so date-range queries in
+    # "total consumption" energy mode can compute (last - first) deltas.
+    await _safe_execute(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS smart_plug_energy_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            plug_id INTEGER NOT NULL REFERENCES smart_plugs(id) ON DELETE CASCADE,
+            recorded_at DATETIME NOT NULL,
+            lifetime_kwh REAL NOT NULL
+        )
+        """
+        if is_sqlite()
+        else """
+        CREATE TABLE IF NOT EXISTS smart_plug_energy_snapshots (
+            id SERIAL PRIMARY KEY,
+            plug_id INTEGER NOT NULL REFERENCES smart_plugs(id) ON DELETE CASCADE,
+            recorded_at TIMESTAMP NOT NULL,
+            lifetime_kwh REAL NOT NULL
+        )
+        """,
+    )
+    await _safe_execute(
+        conn,
+        "CREATE INDEX IF NOT EXISTS ix_plug_energy_snapshots_plug_time "
+        "ON smart_plug_energy_snapshots(plug_id, recorded_at)",
+    )
 
     # Seed default settings keys that must exist on fresh install
     default_settings = [
