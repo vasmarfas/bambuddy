@@ -31,6 +31,22 @@
 
 ---
 
+## 📣 Contributors Wanted — Help Shape Bambuddy
+
+Bambuddy is a community-driven project and I'm **actively looking for contributors** — especially for two areas I can't cover alone:
+
+- 📝 **Documentation writers** — help improve the wiki, guides, and feature docs so new users have a smooth onboarding
+- 💬 **Forum moderators & admins** — we're launching a **Discourse-based community forum** and need people to help moderate, welcome newcomers, and keep discussions healthy
+
+You don't need to be a developer. If you enjoy writing, helping others, or keeping a community friendly, you're exactly who we're looking for.
+
+**Get in touch:**
+- 💬 [Discord](https://discord.gg/aFS3ZfScHM) — fastest way to chat
+- 🐙 [GitHub Discussions](https://github.com/maziggy/bambuddy/discussions) — open a thread
+- 📧 **martin@bambuddy.cool** — email Martin directly (no GitHub or Discord needed)
+
+---
+
 ## 🌐 NEW: Remote Printing with Proxy Mode
 
 <p align="center">
@@ -595,12 +611,15 @@ Full documentation available at **[wiki.bambuddy.cool](http://wiki.bambuddy.cool
 
 ## 🤝 Contributing
 
-Contributions welcome! Here's how to help:
+Contributions welcome! **I'm especially looking for help with documentation and the upcoming Discourse forum** — see [Contributors Wanted](#-contributors-wanted--help-shape-bambuddy) above. Other ways to help:
 
-1. **Test** — Report issues with your printer model
-2. **Translate** — Add new languages
-3. **Code** — Submit PRs for bugs or features
-4. **Document** — Improve wiki and guides
+1. **📝 Document** — Improve the wiki and guides *(urgently needed!)*
+2. **💬 Moderate** — Help run the upcoming community forum *(urgently needed!)*
+3. **Test** — Report issues with your printer model
+4. **Translate** — Add new languages
+5. **Code** — Submit PRs for bugs or features
+
+Not sure where to start? Reach out on [Discord](https://discord.gg/aFS3ZfScHM) or email **martin@bambuddy.cool** — I'll help you find something that fits.
 
 ```bash
 # Development setup
