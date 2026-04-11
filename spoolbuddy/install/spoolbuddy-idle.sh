@@ -12,9 +12,38 @@
 
 set -u
 
+LOG_FILE="${SPOOLBUDDY_IDLE_LOG:-$HOME/.cache/spoolbuddy-idle.log}"
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+exec >>"$LOG_FILE" 2>&1
+echo "=== $(date -Is) spoolbuddy-idle starting (pid=$$) ==="
+echo "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-<unset>}"
+echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-<unset>}"
+echo "PATH=$PATH"
+
 DEFAULT_TIMEOUT=300
 ENV_FILE="${SPOOLBUDDY_ENV_FILE:-/opt/bambuddy/spoolbuddy/.env}"
 OUTPUT="${SPOOLBUDDY_DISPLAY_OUTPUT:-HDMI-A-1}"
+
+# Wait for labwc to actually bring up its Wayland socket. Autostart fires
+# before labwc finishes exporting WAYLAND_DISPLAY on some systems, which
+# makes swayidle exit immediately.
+if [ -z "${WAYLAND_DISPLAY:-}" ] && [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    for _ in $(seq 1 20); do
+        sock=$(ls -1 "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null | grep -v '\.lock$' | head -n1 || true)
+        if [ -n "$sock" ]; then
+            WAYLAND_DISPLAY="$(basename "$sock")"
+            export WAYLAND_DISPLAY
+            echo "auto-detected WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
+            break
+        fi
+        sleep 0.5
+    done
+fi
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+    XDG_RUNTIME_DIR="/run/user/$(id -u)"
+    export XDG_RUNTIME_DIR
+    echo "defaulted XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+fi
 
 if [ -r "$ENV_FILE" ]; then
     set -a
@@ -58,9 +87,11 @@ fi
 
 if [ "$TIMEOUT" -le 0 ]; then
     # Blanking explicitly disabled — don't launch swayidle at all.
+    echo "timeout<=0, sleeping forever"
     exec sleep infinity
 fi
 
+echo "execing swayidle with timeout=$TIMEOUT output=$OUTPUT"
 exec swayidle -w \
     timeout "$TIMEOUT" "wlopm --off $OUTPUT" \
     resume "wlopm --on $OUTPUT"
