@@ -106,37 +106,30 @@ class DisplayControl:
             self._blanked = True
             logger.debug("Screen idle timeout reached (swayidle manages blanking)")
 
+    _WAYLAND_ENV_FILE = Path("/tmp/spoolbuddy-wayland-env")
+
     def _discover_wayland_env(self) -> dict[str, str] | None:
         """Discover WAYLAND_DISPLAY and XDG_RUNTIME_DIR for the kiosk session.
 
         The daemon runs as a systemd service outside the Wayland session, so
-        these variables aren't inherited.  First try our own runtime dir, then
-        scan all /run/user/*/ dirs — on a kiosk there's exactly one Wayland
-        session and the daemon may run under a system uid that logind doesn't
-        create a runtime dir for.
+        these variables aren't inherited.  The kiosk idle watchdog
+        (spoolbuddy-idle.sh) writes them to /tmp/spoolbuddy-wayland-env on
+        startup — read that file.
         """
-        candidates: list[Path] = []
-        # Prefer our own runtime dir if set
-        own_xdg = os.environ.get("XDG_RUNTIME_DIR", "")
-        if own_xdg:
-            candidates.append(Path(own_xdg))
-        candidates.append(Path(f"/run/user/{os.getuid()}"))
-        # Fall back to scanning all user runtime dirs
-        run_user = Path("/run/user")
-        if run_user.is_dir():
-            for uid_dir in sorted(run_user.iterdir()):
-                if uid_dir.is_dir() and uid_dir not in candidates:
-                    candidates.append(uid_dir)
-
-        for runtime in candidates:
-            if not runtime.is_dir():
-                continue
-            try:
-                for entry in sorted(runtime.iterdir()):
-                    if entry.name.startswith("wayland-") and not entry.name.endswith(".lock"):
-                        return {"WAYLAND_DISPLAY": entry.name, "XDG_RUNTIME_DIR": str(runtime)}
-            except PermissionError:
-                continue
+        if not self._WAYLAND_ENV_FILE.exists():
+            return None
+        try:
+            env: dict[str, str] = {}
+            for line in self._WAYLAND_ENV_FILE.read_text().strip().splitlines():
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    env[key] = value
+            wayland_display = env.get("WAYLAND_DISPLAY", "")
+            xdg_runtime_dir = env.get("XDG_RUNTIME_DIR", "")
+            if wayland_display and xdg_runtime_dir:
+                return {"WAYLAND_DISPLAY": wayland_display, "XDG_RUNTIME_DIR": xdg_runtime_dir}
+        except Exception as e:
+            logger.warning("Failed to read %s: %s", self._WAYLAND_ENV_FILE, e)
         return None
 
     def _wlopm(self, on: bool) -> None:

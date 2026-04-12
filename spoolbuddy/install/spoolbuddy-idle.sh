@@ -85,6 +85,15 @@ if [ -n "$BACKEND_URL" ] && [ -n "$API_KEY" ] && [ -n "$DEVICE_ID" ]; then
     fi
 fi
 
+# Write Wayland env to a known file so the SpoolBuddy daemon (which runs as a
+# systemd service outside the compositor) can discover the socket and call wlopm
+# to wake the display on NFC/scale events.
+WAYLAND_ENV_FILE="/tmp/spoolbuddy-wayland-env"
+printf 'WAYLAND_DISPLAY=%s\nXDG_RUNTIME_DIR=%s\n' \
+    "${WAYLAND_DISPLAY:-}" "${XDG_RUNTIME_DIR:-}" > "$WAYLAND_ENV_FILE"
+chmod 644 "$WAYLAND_ENV_FILE"
+echo "wrote Wayland env to $WAYLAND_ENV_FILE"
+
 if [ "$TIMEOUT" -le 0 ]; then
     # Blanking explicitly disabled — don't launch swayidle at all.
     echo "timeout<=0, sleeping forever"
