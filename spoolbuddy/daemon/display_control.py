@@ -27,6 +27,7 @@ class DisplayControl:
         self._blank_timeout = 0  # seconds, 0 = disabled
         self._last_activity = time.monotonic()
         self._blanked = False
+        self._daemon_woke = False  # True when the daemon woke the display (NFC/scale)
         self._wlopm_path = shutil.which("wlopm")
         self._wayland_env: dict[str, str] | None = None
         self._output = os.environ.get("SPOOLBUDDY_DISPLAY_OUTPUT", "HDMI-A-1")
@@ -141,10 +142,20 @@ class DisplayControl:
 
     def _blank(self):
         self._blanked = True
-        self._wlopm(on=False)
-        logger.debug("Screen idle timeout reached, HDMI off")
+        # Only power off HDMI if the daemon was responsible for the last wake.
+        # Touch-based wake/blank is managed entirely by swayidle — if we called
+        # wlopm --off here unconditionally, we'd fight swayidle because the
+        # daemon never sees touch events and its idle timer would expire while
+        # the user is still interacting via the touchscreen.
+        if self._daemon_woke:
+            self._daemon_woke = False
+            self._wlopm(on=False)
+            logger.debug("Daemon wake idle timeout reached, HDMI off")
+        else:
+            logger.debug("Screen idle timeout reached (swayidle manages HDMI)")
 
     def _unblank(self):
         self._blanked = False
+        self._daemon_woke = True
         self._wlopm(on=True)
-        logger.debug("Activity detected, HDMI on")
+        logger.debug("Activity detected (NFC/scale), HDMI on")
