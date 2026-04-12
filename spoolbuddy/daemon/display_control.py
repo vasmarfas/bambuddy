@@ -125,23 +125,35 @@ class DisplayControl:
     def _wlopm(self, on: bool) -> None:
         """Toggle HDMI output via wlopm.  No-op if wlopm is unavailable."""
         if not self._wlopm_path:
+            logger.warning("wlopm not available, cannot control HDMI")
             return
         # Retry discovery each call until the Wayland socket appears — labwc
         # may start after the daemon on boot.
         if self._wayland_env is None:
             self._wayland_env = self._discover_wayland_env()
             if self._wayland_env is None:
-                logger.debug("No Wayland socket found, cannot control HDMI")
+                logger.warning("No Wayland socket found in %s, cannot control HDMI", f"/run/user/{os.getuid()}")
                 return
             logger.info("Wayland session discovered: %s", self._wayland_env.get("WAYLAND_DISPLAY"))
         flag = "--on" if on else "--off"
         try:
             env = {**os.environ, **self._wayland_env}
-            subprocess.run(
+            result = subprocess.run(
                 [self._wlopm_path, flag, self._output],
                 env=env,
                 timeout=5,
                 capture_output=True,
+                text=True,
             )
+            if result.returncode != 0:
+                logger.warning(
+                    "wlopm %s %s exit=%d: %s",
+                    flag,
+                    self._output,
+                    result.returncode,
+                    (result.stderr or result.stdout).strip(),
+                )
+            else:
+                logger.info("wlopm %s %s OK", flag, self._output)
         except Exception as e:
-            logger.debug("wlopm %s %s failed: %s", flag, self._output, e)
+            logger.warning("wlopm %s %s failed: %s", flag, self._output, e)
