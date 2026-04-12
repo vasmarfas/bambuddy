@@ -109,9 +109,16 @@ swayidle -w \
     resume "wlopm --on $OUTPUT" &
 SWAYIDLE_PID=$!
 
-# Monitor wake FIFO — when the daemon writes to it, turn the display on.
+# Monitor wake FIFO — when the daemon writes to it, turn the display on
+# and schedule a re-blank after TIMEOUT seconds (swayidle doesn't know about
+# FIFO wakes so it won't re-blank on its own).
+REBLANK_PID=""
 while read -r _ < "$WAKE_FIFO"; do
     wlopm --on "$OUTPUT" 2>/dev/null || true
+    # Cancel any pending re-blank timer, then start a new one
+    [ -n "$REBLANK_PID" ] && kill "$REBLANK_PID" 2>/dev/null || true
+    (sleep "$TIMEOUT" && wlopm --off "$OUTPUT" 2>/dev/null) &
+    REBLANK_PID=$!
 done &
 FIFO_PID=$!
 
