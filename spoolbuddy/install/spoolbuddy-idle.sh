@@ -85,22 +85,38 @@ if [ -n "$BACKEND_URL" ] && [ -n "$API_KEY" ] && [ -n "$DEVICE_ID" ]; then
     fi
 fi
 
-# Write Wayland env to a known file so the SpoolBuddy daemon (which runs as a
-# systemd service outside the compositor) can discover the socket and call wlopm
-# to wake the display on NFC/scale events.
-WAYLAND_ENV_FILE="/tmp/spoolbuddy-wayland-env"
-printf 'WAYLAND_DISPLAY=%s\nXDG_RUNTIME_DIR=%s\n' \
-    "${WAYLAND_DISPLAY:-}" "${XDG_RUNTIME_DIR:-}" > "$WAYLAND_ENV_FILE"
-chmod 644 "$WAYLAND_ENV_FILE"
-echo "wrote Wayland env to $WAYLAND_ENV_FILE"
+# FIFO for the SpoolBuddy daemon to request display wake from outside the
+# Wayland session (NFC tag scan, scale weight change).  The daemon writes
+# "wake\n" to this pipe; the monitor loop below calls wlopm --on.
+WAKE_FIFO="/tmp/spoolbuddy-wake"
+rm -f "$WAKE_FIFO"
+mkfifo -m 622 "$WAKE_FIFO"
+echo "wake FIFO created at $WAKE_FIFO"
 
 if [ "$TIMEOUT" -le 0 ]; then
-    # Blanking explicitly disabled — don't launch swayidle at all.
-    echo "timeout<=0, sleeping forever"
-    exec sleep infinity
+    # Blanking explicitly disabled — just monitor the wake FIFO so NFC/scale
+    # wake still works even without swayidle.
+    echo "timeout<=0, monitoring wake FIFO only (no swayidle)"
+    while read -r _ < "$WAKE_FIFO"; do
+        wlopm --on "$OUTPUT" 2>/dev/null || true
+    done
+    exit 0
 fi
 
-echo "execing swayidle with timeout=$TIMEOUT output=$OUTPUT"
-exec swayidle -w \
+echo "starting swayidle with timeout=$TIMEOUT output=$OUTPUT"
+swayidle -w \
     timeout "$TIMEOUT" "wlopm --off $OUTPUT" \
-    resume "wlopm --on $OUTPUT"
+    resume "wlopm --on $OUTPUT" &
+SWAYIDLE_PID=$!
+
+# Monitor wake FIFO — when the daemon writes to it, turn the display on.
+while read -r _ < "$WAKE_FIFO"; do
+    wlopm --on "$OUTPUT" 2>/dev/null || true
+done &
+FIFO_PID=$!
+
+# If either process exits, clean up and exit.
+wait -n "$SWAYIDLE_PID" "$FIFO_PID" 2>/dev/null
+echo "child exited, cleaning up"
+kill "$SWAYIDLE_PID" "$FIFO_PID" 2>/dev/null || true
+rm -f "$WAKE_FIFO"
