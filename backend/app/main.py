@@ -32,6 +32,7 @@ from backend.app.api.routes import (
     local_presets,
     maintenance,
     metrics,
+    mfa,
     notification_templates,
     notifications,
     obico,
@@ -3741,6 +3742,101 @@ def stop_expected_prints_cleanup() -> None:
         logging.getLogger(__name__).info("Expected prints cleanup stopped")
 
 
+# ---------------------------------------------------------------------------
+# L-2: Periodic auth-token cleanup (stale TOTP + expired revoked JTIs)
+# ---------------------------------------------------------------------------
+
+_auth_cleanup_task: asyncio.Task | None = None
+_AUTH_CLEANUP_INTERVAL = 3600  # seconds (hourly)
+
+
+async def _run_auth_cleanup() -> None:
+    """Single cleanup pass: remove stale TOTP records, expired revoked JTIs, and old rate-limit events."""
+    from backend.app.core.database import async_session
+    from backend.app.models.auth_ephemeral import AuthEphemeralToken, AuthRateLimitEvent
+    from backend.app.models.user_totp import UserTOTP
+
+    now = datetime.now(timezone.utc)
+
+    # Remove unconfirmed (is_enabled=False) TOTP records older than 1 hour.
+    try:
+        async with async_session() as db:
+            stale_cutoff = now - timedelta(hours=1)
+            result = await db.execute(
+                select(UserTOTP).where(
+                    UserTOTP.is_enabled.is_(False),
+                    UserTOTP.created_at < stale_cutoff,
+                )
+            )
+            stale_records = result.scalars().all()
+            if stale_records:
+                for rec in stale_records:
+                    await db.delete(rec)
+                await db.commit()
+                logging.info("Auth cleanup: removed %d stale unconfirmed TOTP record(s)", len(stale_records))
+    except Exception as e:
+        logging.warning("Auth cleanup: failed to purge stale TOTP records: %s", e)
+
+    # Remove expired revoked-JTI entries (they are no longer needed once the
+    # original token's exp has passed — the token would be rejected by JWT
+    # signature verification regardless).
+    try:
+        async with async_session() as db:
+            await db.execute(
+                delete(AuthEphemeralToken).where(
+                    AuthEphemeralToken.token_type == "revoked_jti",
+                    AuthEphemeralToken.expires_at < now,
+                )
+            )
+            await db.commit()
+    except Exception as e:
+        logging.warning("Auth cleanup: failed to purge expired revoked JTIs: %s", e)
+
+    # L-R6-B: Purge AuthRateLimitEvent rows older than the lockout window (15 min).
+    # Events outside this window can never affect rate-limit decisions — they only
+    # consume DB space.  Use the same window constant as the rate limiter so the
+    # two are always in sync.
+    try:
+        from backend.app.api.routes.mfa import LOCKOUT_WINDOW
+
+        async with async_session() as db:
+            await db.execute(
+                delete(AuthRateLimitEvent).where(
+                    AuthRateLimitEvent.occurred_at < now - LOCKOUT_WINDOW,
+                )
+            )
+            await db.commit()
+    except Exception as e:
+        logging.warning("Auth cleanup: failed to purge stale rate-limit events: %s", e)
+
+
+async def _auth_cleanup_loop() -> None:
+    """Periodic background task: run auth cleanup every hour."""
+    while True:
+        try:
+            await _run_auth_cleanup()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logging.warning("Auth cleanup loop error: %s", e)
+        await asyncio.sleep(_AUTH_CLEANUP_INTERVAL)
+
+
+def start_auth_cleanup() -> None:
+    global _auth_cleanup_task
+    if _auth_cleanup_task is None:
+        _auth_cleanup_task = asyncio.create_task(_auth_cleanup_loop())
+        logging.getLogger(__name__).info("Auth periodic cleanup started")
+
+
+def stop_auth_cleanup() -> None:
+    global _auth_cleanup_task
+    if _auth_cleanup_task:
+        _auth_cleanup_task.cancel()
+        _auth_cleanup_task = None
+        logging.getLogger(__name__).info("Auth periodic cleanup stopped")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -3942,6 +4038,9 @@ async def lifespan(app: FastAPI):
     # registered but on_print_start never fires)
     start_expected_prints_cleanup()
 
+    # L-2: Start periodic auth cleanup (stale TOTP + expired revoked JTIs)
+    start_auth_cleanup()
+
     # Initialize virtual printer manager and sync from DB
     from backend.app.services.virtual_printer import virtual_printer_manager
 
@@ -3967,6 +4066,7 @@ async def lifespan(app: FastAPI):
     stop_spoolbuddy_watchdog()
     stop_camera_cleanup()
     stop_expected_prints_cleanup()
+    stop_auth_cleanup()
     printer_manager.disconnect_all()
     await close_spoolman_client()
 
@@ -4010,6 +4110,14 @@ PUBLIC_API_ROUTES = {
     # Advanced auth status needed for login page
     "/api/v1/auth/advanced-auth/status",
     "/api/v1/auth/forgot-password",  # Password reset for advanced auth
+    "/api/v1/auth/forgot-password/confirm",  # Complete password reset with token (H-6)
+    # 2FA routes that are called BEFORE a JWT is issued (pre-auth flow)
+    "/api/v1/auth/2fa/verify",  # Exchange pre_auth_token + 2FA code for JWT
+    "/api/v1/auth/2fa/email/send",  # Send OTP email (pre_auth_token based)
+    # OIDC routes that must be reachable without a JWT
+    "/api/v1/auth/oidc/providers",  # Public list of enabled providers
+    "/api/v1/auth/oidc/callback",  # Redirect target from OIDC provider
+    "/api/v1/auth/oidc/exchange",  # Exchange short-lived OIDC token for JWT
     # Version check for updates (no sensitive data)
     "/api/v1/updates/version",
     # Metrics endpoint handles its own prometheus_token authentication
@@ -4020,6 +4128,8 @@ PUBLIC_API_ROUTES = {
 PUBLIC_API_PREFIXES = [
     # WebSocket connections handle their own auth
     "/api/v1/ws",
+    # OIDC authorize redirects — include provider_id in path
+    "/api/v1/auth/oidc/authorize/",
 ]
 
 # Route patterns that are public (read-only display data)
@@ -4053,6 +4163,27 @@ async def security_headers_middleware(request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # Content-Security-Policy for the React SPA.
+    # Notes:
+    #   - 'unsafe-inline' for style-src: React and UI libs inject inline styles at runtime.
+    #   - connect-src ws:/wss:: MQTT/printer WebSocket connections.
+    #   - img-src data: / blob:: base64 thumbnails and Blob-URL timelapse previews.
+    #   - media-src blob:: timelapse video player uses Blob URLs.
+    #   - font-src data:: some icon fonts are embedded as data URIs.
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "media-src 'self' blob:; "
+        "connect-src 'self' ws: wss:; "
+        "font-src 'self' data:; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'none';"
+    )
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
 
@@ -4121,23 +4252,45 @@ async def auth_middleware(request, call_next):
     import jwt
 
     try:
-        from backend.app.core.auth import ALGORITHM, SECRET_KEY
+        from backend.app.core.auth import (
+            ALGORITHM,
+            SECRET_KEY,
+            _is_token_fresh,
+            get_user_by_username,
+            is_jti_revoked,
+        )
 
         token = auth_header.replace("Bearer ", "")
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username = payload.get("sub")
         if not username:
             raise ValueError("No username in token")
+        jti = payload.get("jti")
+        if not jti:
+            raise ValueError("No jti in token")
+        iat = payload.get("iat")
 
-        # Verify user exists and is active
+        # Reject revoked tokens (defense-in-depth gateway check)
+        if await is_jti_revoked(jti):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Token has been revoked"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Verify user exists, is active, and token is still fresh (L-R8-A)
         async with async_session() as db:
-            from backend.app.core.auth import get_user_by_username
-
             user = await get_user_by_username(db, username)
             if not user or not user.is_active:
                 return JSONResponse(
                     status_code=401,
                     content={"detail": "User not found or inactive"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            if not _is_token_fresh(iat, user):
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Token no longer valid"},
                     headers={"WWW-Authenticate": "Bearer"},
                 )
     except jwt.ExpiredSignatureError:
@@ -4158,6 +4311,7 @@ async def auth_middleware(request, call_next):
 
 # API routes
 app.include_router(auth.router, prefix=app_settings.api_prefix)
+app.include_router(mfa.router, prefix=app_settings.api_prefix)
 app.include_router(bug_report.router, prefix=app_settings.api_prefix)
 app.include_router(users.router, prefix=app_settings.api_prefix)
 app.include_router(groups.router, prefix=app_settings.api_prefix)

@@ -156,6 +156,7 @@ async def init_db():
         ams_label,
         api_key,
         archive,
+        auth_ephemeral,
         bug_report,
         color_catalog,
         external_link,
@@ -168,6 +169,7 @@ async def init_db():
         maintenance,
         notification,
         notification_template,
+        oidc_provider,
         orca_base_cache,
         pending_upload,
         print_batch,
@@ -188,6 +190,8 @@ async def init_db():
         spoolbuddy_device,
         user,
         user_email_pref,
+        user_otp_code,
+        user_totp,
         virtual_printer,
     )
 
@@ -305,6 +309,19 @@ async def run_migrations(conn):
             )
     except (OperationalError, ProgrammingError):
         pass  # Already applied
+
+    # Migration: Enforce uniqueness on user_oidc_links for existing rows.
+    # create_all() is idempotent and does not add constraints to existing tables,
+    # so we create covering unique indexes explicitly here.
+    await _safe_execute(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_oidc_link_provider_sub"
+        " ON user_oidc_links (provider_id, provider_user_id)",
+    )
+    await _safe_execute(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_oidc_link_user_provider ON user_oidc_links (user_id, provider_id)",
+    )
 
     # Migration: Create FTS5 virtual table for archive full-text search (SQLite only)
     # PostgreSQL uses tsvector + GIN index instead (set up in archives.py search route)
@@ -1437,6 +1454,33 @@ async def run_migrations(conn):
         conn,
         "CREATE INDEX IF NOT EXISTS ix_plug_energy_snapshots_plug_time "
         "ON smart_plug_energy_snapshots(plug_id, recorded_at)",
+    )
+
+    # Migration: Add PKCE code_verifier column to auth_ephemeral_tokens
+    await _safe_execute(conn, "ALTER TABLE auth_ephemeral_tokens ADD COLUMN code_verifier VARCHAR(128)")
+
+    # Migration: Add TOTP replay-protection counter to user_totp
+    await _safe_execute(conn, "ALTER TABLE user_totp ADD COLUMN last_totp_counter BIGINT")
+
+    # Migration: Add challenge_id for pre-auth token client binding (HttpOnly cookie)
+    await _safe_execute(conn, "ALTER TABLE auth_ephemeral_tokens ADD COLUMN challenge_id VARCHAR(128)")
+
+    # Migration: Add auto_link_existing_accounts column to oidc_providers (M-4)
+    await _safe_execute(conn, "ALTER TABLE oidc_providers ADD COLUMN auto_link_existing_accounts BOOLEAN DEFAULT 1")
+
+    # Migration: Add password_changed_at to users (M-R7-B)
+    # Tracks the last time a user's password was changed/reset.  JWTs whose iat
+    # predates this timestamp are rejected in all six auth validation paths.
+    await _safe_execute(conn, "ALTER TABLE users ADD COLUMN password_changed_at DATETIME")
+
+    # Migration: Back-fill password_changed_at = created_at for existing users (I2).
+    # Users who never changed their password would have NULL here, meaning old
+    # tokens could never be invalidated via the freshness check.  Setting it to
+    # created_at is conservative: any token issued before the account was created
+    # is always invalid, so this is a safe lower bound.
+    await _safe_execute(
+        conn,
+        "UPDATE users SET password_changed_at = created_at WHERE password_changed_at IS NULL",
     )
 
     # Seed default settings keys that must exist on fresh install
