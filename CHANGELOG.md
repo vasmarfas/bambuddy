@@ -5,6 +5,8 @@ All notable changes to Bambuddy will be documented in this file.
 ## [0.2.3b4] - Unreleased
 
 ### New Features
+- **Move Build Plate from Printer Card** ([#791](https://github.com/maziggy/bambuddy/issues/791)) — The printer card controls row now has a Z-jog badge between the speed control and the stop/pause buttons. Click the up/down arrows to move the build plate; click the middle label to switch the step size (1 / 10 / 50 mm). When the printer is not homed (typical right after a print finishes), the first jog opens a Bambu Studio-style warning modal with **Home Z**, **Move anyway** (bypasses soft endstops for this move), or **Cancel**. After the first "Move anyway" in a session, subsequent jogs skip the dialog. Disabled while a print is running. Backed by new `POST /printers/{id}/bed-jog` and `POST /printers/{id}/home-axes` endpoints, both gated behind `printers:control`. Thanks to @cadtoolbox for the request.
+
 - **Printer Card Status Badges & Quick Controls** — The Printers page printer card now exposes four new at-a-glance controls inspired by the Home Assistant Bambu Lab integration:
   - **SD Card badge** in the top status row (HardDrive icon, green when card present, red when missing).
   - **Enclosure Door badge** in the top status row (DoorOpen/DoorClosed icons, green when closed, yellow when open). Detection uses the right MQTT field per printer family — `home_flag` bit 23 on X1/X1C/X1E and the top-level `stat` hex string bit 23 on P1/P2/H2 — and falls through the existing WebSocket push (status-change dedup key now includes door state, so toggling the door alone triggers a live badge update without waiting for the 30 s REST poll).
