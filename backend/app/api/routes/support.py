@@ -103,18 +103,14 @@ def _apply_log_level(debug: bool):
     for handler in root_logger.handlers:
         handler.setLevel(new_level)
 
-    # Also adjust third-party loggers
-    if debug:
-        logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-        logging.getLogger("aiosqlite").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.DEBUG)
-        logging.getLogger("httpx").setLevel(logging.DEBUG)
-        logging.getLogger("paho.mqtt").setLevel(logging.DEBUG)
-    else:
-        logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.WARNING)
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("paho.mqtt").setLevel(logging.WARNING)
+    # Also adjust third-party loggers. httpx/httpcore stay pinned to WARNING
+    # even in debug mode — at INFO/DEBUG they log full request URLs, which
+    # leaks secrets embedded in webhook URLs (Discord, generic webhooks, etc.).
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("paho.mqtt").setLevel(logging.DEBUG if debug else logging.WARNING)
 
     logger.info("Log level changed to %s", "DEBUG" if debug else "INFO")
 

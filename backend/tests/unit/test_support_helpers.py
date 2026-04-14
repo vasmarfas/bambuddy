@@ -35,15 +35,17 @@ class TestApplyLogLevel:
 
         assert logging.getLogger("aiosqlite").level == logging.WARNING
 
-    def test_debug_mode_enables_httpcore_debug(self):
-        """Verify httpcore stays at DEBUG in debug mode."""
+    def test_debug_mode_keeps_httpx_pinned_to_warning(self):
+        """httpx/httpcore must stay at WARNING even in debug mode — at INFO/DEBUG
+        they log full request URLs, leaking webhook tokens (Discord etc.)."""
         import logging
 
         from backend.app.api.routes.support import _apply_log_level
 
         _apply_log_level(True)
 
-        assert logging.getLogger("httpcore").level == logging.DEBUG
+        assert logging.getLogger("httpcore").level == logging.WARNING
+        assert logging.getLogger("httpx").level == logging.WARNING
 
     def test_non_debug_mode_suppresses_all_noisy_loggers(self):
         """Verify all noisy loggers are set to WARNING in non-debug mode."""
