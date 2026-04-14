@@ -3604,6 +3604,11 @@ class TestSdCardParsing:
     def test_home_flag_no_sdcard_bits(self):
         client = self._make_client()
         client.state.sdcard = True
+        # Downgrade requires 3 consecutive clear reads (H2D heartbeat workaround).
+        client._update_state({"home_flag": 0x00000000})
+        assert client.state.sdcard is True
+        client._update_state({"home_flag": 0x00000000})
+        assert client.state.sdcard is True
         client._update_state({"home_flag": 0x00000000})
         assert client.state.sdcard is False
 
@@ -3612,7 +3617,8 @@ class TestSdCardParsing:
         client = self._make_client()
         client._update_state({"home_flag": 0x00000100, "sdcard": "HAS_SDCARD_NORMAL"})
         assert client.state.sdcard is True
-        client._update_state({"home_flag": 0x00000000, "sdcard": 1})
+        for _ in range(3):
+            client._update_state({"home_flag": 0x00000000, "sdcard": 1})
         assert client.state.sdcard is False
 
     def test_sdcard_string_fallback_when_no_home_flag(self):

@@ -2275,7 +2275,17 @@ class BambuMQTTClient:
         # badge to flap on H2D. Prefer home_flag when available, fall back to a truthy
         # check on the `sdcard` field for firmwares that only send that.
         if home_flag is not None:
-            self.state.sdcard = ((home_flag >> 8) & 0x3) != 0
+            sd_bits_set = ((home_flag >> 8) & 0x3) != 0
+            # H2D sometimes sends heartbeat-style home_flag pushes where bits 8-9
+            # are clear even when an SD card is inserted. Only downgrade true->false
+            # after several consecutive clear reads; upgrade false->true immediately.
+            if sd_bits_set:
+                self.state.sdcard = True
+                self._sdcard_clear_streak = 0
+            else:
+                self._sdcard_clear_streak = getattr(self, "_sdcard_clear_streak", 0) + 1
+                if self._sdcard_clear_streak >= 3 or not self.state.sdcard:
+                    self.state.sdcard = False
             self._home_flag_seen = True
         elif "sdcard" in data and not self._home_flag_seen:
             # Only trust the legacy top-level field on firmwares that never send
