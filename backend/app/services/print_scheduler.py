@@ -1832,6 +1832,11 @@ class PrintScheduler:
         printer_manager.set_awaiting_plate_clear(item.printer_id, False)
         logger.info("Queue item %s: Status set to 'printing', sending print command...", item.id)
 
+        # Capture state before dispatch so the watchdog can detect whether the
+        # printer actually transitioned (#967).
+        pre_status = printer_manager.get_status(item.printer_id)
+        pre_state = getattr(pre_status, "state", None) if pre_status else None
+
         # Start the print with AMS mapping, plate_id and print options
         started = printer_manager.start_print(
             item.printer_id,
@@ -1848,6 +1853,13 @@ class PrintScheduler:
 
         if started:
             logger.info("Queue item %s: Print started successfully - %s", item.id, filename)
+
+            # Watchdog: if the printer never transitions out of pre_state, the MQTT
+            # publish was accepted locally but didn't reach the printer (half-broken
+            # session — same shape as #887/#936). Revert the queue item so the next
+            # dispatch can pick it up instead of leaving it stuck in "printing" (#967).
+            if pre_state:
+                asyncio.create_task(self._watchdog_print_start(item.id, item.printer_id, pre_state))
 
             # Get estimated time for notification
             estimated_time = None
@@ -1912,6 +1924,55 @@ class PrintScheduler:
             )
 
             await self._power_off_if_needed(db, item)
+
+    @staticmethod
+    async def _watchdog_print_start(
+        queue_item_id: int,
+        printer_id: int,
+        pre_state: str,
+        timeout: float = 45.0,
+        poll_interval: float = 3.0,
+    ) -> None:
+        """Revert a queue item if the printer never acknowledges the start command.
+
+        Bambuddy optimistically marks the queue item as "printing" right after the
+        MQTT project_file publish succeeds locally. If the printer drops/ignores the
+        command (half-broken MQTT session — #887/#936), the state never transitions
+        and the item would otherwise stay stuck in "printing" forever (#967).
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            await asyncio.sleep(poll_interval)
+            status = printer_manager.get_status(printer_id)
+            if not status:
+                return  # Printer disconnected — don't mess with the DB
+            if status.state != pre_state:
+                return  # Printer picked up the job
+
+        # No transition. Revert the item so the scheduler can retry.
+        async with async_session() as db:
+            item = await db.get(PrintQueueItem, queue_item_id)
+            if not item or item.status != "printing":
+                return  # Already moved on (completed/cancelled/etc.)
+            item.status = "pending"
+            item.started_at = None
+            await db.commit()
+            logger.warning(
+                "Queue item %s: printer %d did not respond to print command within "
+                "%.0fs (state still %s) — reverted to 'pending' for retry (#967)",
+                queue_item_id,
+                printer_id,
+                timeout,
+                pre_state,
+            )
+
+        # Same half-broken-session recovery as background_dispatch: force the
+        # MQTT client to reconnect so the next dispatch lands without a power cycle.
+        client = printer_manager.get_client(printer_id)
+        if client and hasattr(client, "force_reconnect_stale_session"):
+            client.force_reconnect_stale_session(
+                f"queue print command unacknowledged after {timeout:.0f}s (state still {pre_state})"
+            )
 
 
 # Global scheduler instance
