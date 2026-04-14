@@ -1493,6 +1493,49 @@ async def start_drying(
     if duration < 1 or duration > 24:
         raise HTTPException(400, "Duration must be 1-24 hours")
 
+    # Inspect the live AMS unit: surface blocking dry_sf_reasons (otherwise the
+    # firmware silently ignores the command — #971) and backfill an empty
+    # filament field from the first loaded tray so the printer doesn't reject
+    # the payload.
+    target_ams: dict | None = None
+    for unit in (live_state.raw_data.get("ams") if live_state else None) or []:
+        try:
+            if int(unit.get("id", -1)) == ams_id:
+                target_ams = unit
+                break
+        except (TypeError, ValueError):
+            continue
+
+    if target_ams is not None:
+        reason_messages = {
+            0: "Printer is busy",
+            1: "Insufficient power — too many AMS drying or external PSU required",
+            2: "AMS is busy",
+            3: "Filament is at the AMS outlet — retract it first",
+            4: "AMS is already starting a drying cycle",
+            5: "Not supported in 2D mode",
+            6: "AMS is already drying",
+            7: "AMS firmware is upgrading",
+            8: "Plug in the external AMS power adapter to start drying",
+        }
+        for code in target_ams.get("dry_sf_reason") or []:
+            try:
+                code_int = int(code)
+            except (TypeError, ValueError):
+                continue
+            if code_int in reason_messages:
+                raise HTTPException(409, reason_messages[code_int])
+
+        if not filament:
+            for tray in target_ams.get("tray") or []:
+                tray_type = tray.get("tray_type")
+                if tray_type:
+                    filament = str(tray_type)
+                    break
+
+    if not filament:
+        filament = "PLA"
+
     success = printer_manager.send_drying_command(
         printer_id, ams_id, temp, duration, mode=1, filament=filament, rotate_tray=rotate_tray
     )
