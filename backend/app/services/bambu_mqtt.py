@@ -360,6 +360,11 @@ class BambuMQTTClient:
         self._dev_mode_probe_failures: int = 0  # consecutive unanswered probes
         self._connect_time: float = 0.0  # monotonic timestamp of last _on_connect
 
+        # Once we've seen home_flag from this printer, it's the canonical SD-card
+        # source. The legacy top-level `sdcard` field arrives in partial pushes
+        # with inconsistent typing and caused badge flap (#936 follow-up).
+        self._home_flag_seen: bool = False
+
         # Set when check_staleness() force-closes the socket to trigger reconnect.
         # Prevents _on_disconnect from redundantly broadcasting state (already done).
         self._stale_reconnecting: bool = False
@@ -456,6 +461,7 @@ class BambuMQTTClient:
             self._dev_mode_probe_seq = None
             self._dev_mode_probe_time = 0.0
             self._dev_mode_probe_failures = 0
+            self._home_flag_seen = False
             self._connect_time = time.monotonic()
             client.subscribe(self.topic_subscribe)
             # Subscribe to request topic for ams_mapping capture (if supported by broker)
@@ -2270,7 +2276,11 @@ class BambuMQTTClient:
         # check on the `sdcard` field for firmwares that only send that.
         if home_flag is not None:
             self.state.sdcard = ((home_flag >> 8) & 0x3) != 0
-        elif "sdcard" in data:
+            self._home_flag_seen = True
+        elif "sdcard" in data and not self._home_flag_seen:
+            # Only trust the legacy top-level field on firmwares that never send
+            # home_flag. Once we've seen home_flag on this session, partial
+            # pushes carrying only `sdcard` must not flip the badge.
             raw_sdcard = data["sdcard"]
             if isinstance(raw_sdcard, str):
                 self.state.sdcard = "HAS_SDCARD" in raw_sdcard.upper() or raw_sdcard.lower() in ("true", "normal", "1")
