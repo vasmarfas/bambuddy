@@ -10,18 +10,16 @@ See `obico_smoothing.py` for the per-print EWM + rolling-mean math.
 import asyncio
 import json
 import logging
+import secrets
+import time
 from collections import deque
-from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import select
 
-from backend.app.core.auth import (
-    CAMERA_STREAM_TOKEN_EXPIRE_MINUTES,
-    create_camera_stream_token,
-)
 from backend.app.core.database import async_session
+from backend.app.models.printer import Printer
 from backend.app.models.settings import Settings
 from backend.app.services.obico_smoothing import (
     PrintState,
@@ -35,6 +33,45 @@ logger = logging.getLogger(__name__)
 HISTORY_MAX = 50
 HEALTH_TIMEOUT = 5.0
 DETECTION_TIMEOUT = 30.0
+SNAPSHOT_CAPTURE_TIMEOUT = 20  # seconds — we control this, not Obico
+FRAME_CACHE_TTL = 30.0  # seconds — Obico usually fetches within 1s of receiving the URL
+
+# Module-level one-shot frame cache. Obico's ML API has a hardcoded 5s read timeout
+# on the URL it fetches, which our /camera/snapshot endpoint can exceed (RTSP keyframe
+# wait + ffmpeg startup on cold calls). We capture locally first, stash the JPEG under
+# a random nonce, and hand Obico a URL that serves the cached bytes instantly.
+_frame_cache: dict[str, tuple[bytes, float]] = {}
+_frame_cache_lock = asyncio.Lock()
+
+
+def _prune_frame_cache() -> None:
+    """Drop entries older than FRAME_CACHE_TTL. Called under the cache lock."""
+    now = time.monotonic()
+    expired = [k for k, (_b, ts) in _frame_cache.items() if now - ts > FRAME_CACHE_TTL]
+    for k in expired:
+        _frame_cache.pop(k, None)
+
+
+async def stash_frame(data: bytes) -> str:
+    """Store JPEG bytes and return a URL-safe nonce that serves them once."""
+    nonce = secrets.token_urlsafe(32)
+    async with _frame_cache_lock:
+        _prune_frame_cache()
+        _frame_cache[nonce] = (data, time.monotonic())
+    return nonce
+
+
+async def pop_frame(nonce: str) -> bytes | None:
+    """Return and remove a cached frame by nonce; None if missing or expired."""
+    async with _frame_cache_lock:
+        _prune_frame_cache()
+        entry = _frame_cache.pop(nonce, None)
+    if entry is None:
+        return None
+    data, ts = entry
+    if time.monotonic() - ts > FRAME_CACHE_TTL:
+        return None
+    return data
 
 
 class ObicoDetectionService:
@@ -53,10 +90,6 @@ class ObicoDetectionService:
         # Global detection event log (most-recent-first)
         self._history: deque = deque(maxlen=HISTORY_MAX)
         self._last_error: str | None = None
-        # Cached camera-stream token so the ML API can fetch snapshots when
-        # auth is enabled. Refreshed before expiry; harmless when auth is off.
-        self._snapshot_token: str | None = None
-        self._snapshot_token_expires_at: datetime | None = None
 
     # ---- lifecycle ----
 
@@ -71,26 +104,6 @@ class ObicoDetectionService:
             self._task.cancel()
             self._task = None
             logger.info("Stopped Obico detection service")
-
-    # ---- snapshot auth ----
-
-    async def _get_snapshot_token(self) -> str:
-        """Return a valid camera-stream token, refreshing it before expiry.
-
-        The ML API fetches the snapshot URL directly, so when Bambuddy's auth
-        is enabled the URL must carry a token (same scheme used by <img>-based
-        camera consumers). When auth is disabled the token is simply ignored.
-        """
-        now = datetime.now(timezone.utc)
-        refresh_before = timedelta(minutes=5)
-        if (
-            self._snapshot_token is None
-            or self._snapshot_token_expires_at is None
-            or self._snapshot_token_expires_at - now <= refresh_before
-        ):
-            self._snapshot_token = await create_camera_stream_token()
-            self._snapshot_token_expires_at = now + timedelta(minutes=CAMERA_STREAM_TOKEN_EXPIRE_MINUTES)
-        return self._snapshot_token
 
     # ---- settings ----
 
@@ -172,6 +185,35 @@ class ObicoDetectionService:
 
             await self._check_printer(printer_id, status, settings)
 
+    async def _capture_frame(self, printer_id: int) -> bytes | None:
+        """Capture one JPEG frame from the printer camera. Returns None on failure.
+
+        Uses a long local timeout because we control it — Obico's ML API never
+        waits on the slow path (it fetches from the nonce-cached URL).
+        """
+        # Late import to avoid cycles at module load time
+        from backend.app.services.camera import capture_camera_frame_bytes
+        from backend.app.services.external_camera import capture_frame as capture_external_frame
+
+        async with async_session() as db:
+            printer = await db.get(Printer, printer_id)
+        if printer is None:
+            self._last_error = f"Printer {printer_id} not found"
+            return None
+
+        if printer.external_camera_enabled and printer.external_camera_url:
+            return await capture_external_frame(
+                printer.external_camera_url,
+                printer.external_camera_type,
+                timeout=SNAPSHOT_CAPTURE_TIMEOUT,
+            )
+        return await capture_camera_frame_bytes(
+            ip_address=printer.ip_address,
+            access_code=printer.access_code,
+            model=printer.model,
+            timeout=SNAPSHOT_CAPTURE_TIMEOUT,
+        )
+
     async def _check_printer(self, printer_id: int, status, settings: dict):
         task_name = getattr(status, "task_name", None) or getattr(status, "subtask_name", "") or ""
         key = f"{task_name}"
@@ -180,10 +222,18 @@ class ObicoDetectionService:
             self._state_keys[printer_id] = key
             self._action_fired[printer_id] = False
 
-        token = await self._get_snapshot_token()
-        snapshot_url = (
-            f"{settings['external_url']}/api/v1/printers/{printer_id}/camera/snapshot?{urlencode({'token': token})}"
-        )
+        # Capture locally first, then hand Obico a nonce URL that returns the
+        # cached bytes instantly. Obico's ML API has a hardcoded 5s read timeout
+        # which would otherwise race our /camera/snapshot endpoint's keyframe wait.
+        frame = await self._capture_frame(printer_id)
+        if not frame:
+            self._last_error = f"Failed to capture snapshot for printer {printer_id}"
+            logger.warning(self._last_error)
+            return
+
+        # secrets.token_urlsafe() already produces a URL-safe path segment.
+        nonce = await stash_frame(frame)
+        snapshot_url = f"{settings['external_url']}/api/v1/obico/cached-frame/{nonce}"
         ml_url = f"{settings['ml_url']}/p/"
 
         try:
