@@ -25,8 +25,8 @@
   <a href="#-features">Features</a> •
   <a href="#-screenshots">Screenshots</a> •
   <a href="#-quick-start">Quick Start</a> •
-  <a href="https://forum.bambuddy.cool">Forum</a> •
   <a href="http://wiki.bambuddy.cool">Documentation</a> •
+  <a href="https://discord.gg/aFS3ZfScHM">Discord</a> •
   <a href="https://forum.bambuddy.cool">Forum</a> •
   <a href="#-contributing">Contributing</a>
 </p>
