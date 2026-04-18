@@ -984,7 +984,7 @@ setup_kiosk() {
         dpkg-divert --local --rename --add /usr/sbin/update-initramfs >/dev/null 2>&1 || true
         ln -sf /bin/true /usr/sbin/update-initramfs
     fi
-    run_with_progress "Installing kiosk packages" apt-get install -y labwc chromium plymouth wlr-randr swayidle wlopm jq
+    run_with_progress "Installing kiosk packages" apt-get install -y labwc chromium plymouth wlr-randr swayidle wlopm jq curl
     # Restore real update-initramfs
     if dpkg-divert --list /usr/sbin/update-initramfs 2>/dev/null | grep -q local; then
         rm -f /usr/sbin/update-initramfs
@@ -1197,6 +1197,18 @@ if [[ -n "\$backend_url" && -n "\$api_key" ]]; then
 else
     kiosk_url="\$FALLBACK_URL"
 fi
+
+# Wait for the Bambuddy backend to be reachable before launching Chromium.
+# Without this the browser opens before uvicorn has bound to the port on a
+# cold boot and the user sees an ERR_CONNECTION_REFUSED splash until they
+# manually reload. Probe /health (no auth, no body) with a short timeout.
+probe_url="\${backend_url:-http://localhost}/health"
+for _i in \$(seq 1 60); do
+    if curl -sf --max-time 2 "\$probe_url" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
 
 exec chromium --kiosk --no-first-run --disable-infobars \
     --disable-session-crashed-bubble --disable-features=TranslateUI \

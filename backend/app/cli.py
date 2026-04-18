@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from backend.app.core.auth import generate_api_key
 from backend.app.core.database import async_session as default_session_maker, init_db
+from backend.app.core.db_dialect import upsert_setting
 from backend.app.models.api_key import APIKey
+from backend.app.models.settings import Settings
 
 DEFAULT_KIOSK_KEY_NAME = "spoolbuddy-kiosk"
 
@@ -68,6 +70,15 @@ async def kiosk_bootstrap(
             expires_at=None,
         )
         db.add(row)
+
+        # Mark first-run setup as completed so the kiosk URL loads directly
+        # instead of being force-redirected to /setup by AuthContext. Without
+        # this, a bundled SpoolBuddy/Bambuddy install boots into the Bambuddy
+        # first-run wizard (touch-only Pi has no keyboard to complete it).
+        # Users who want authentication enable it later from the admin UI; the
+        # API key we just created is already valid so the kiosk keeps working.
+        await upsert_setting(db, Settings, "setup_completed", "true")
+
         await db.commit()
         return full_key
 
