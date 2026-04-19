@@ -1,8 +1,9 @@
 # Updating Bambuddy
 
-> **0.2.3 note:** the in-app **Update** button is unreliable when upgrading from
-> older releases. Use the commands below instead — they cover every supported
-> install path and are safe to run repeatedly.
+> **One-time note for 0.2.2.x → 0.2.3:** the in-app **Update** button does not
+> reliably perform this specific migration. Do this one upgrade from the
+> command line using the steps below. Once you're on 0.2.3, the in-app Update
+> button works normally again for all future releases.
 
 Pick the section that matches how Bambuddy was installed.
 
