@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequirePermissionIfAuthEnabled, require_auth_if_enabled
 from backend.app.core.catalog_defaults import DEFAULT_COLOR_CATALOG, DEFAULT_SPOOL_CATALOG
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -232,6 +232,45 @@ async def get_color_catalog(
         )
     )
     return list(result.scalars().all())
+
+
+@router.get("/colors/map")
+async def get_color_name_map(
+    db: AsyncSession = Depends(get_db),
+    _: User | None = Depends(require_auth_if_enabled),
+):
+    """Compact {hex: name} map for frontend color-name resolution.
+
+    Not gated on INVENTORY_READ — every page that renders a spool color needs
+    this, including read-only views available to users without inventory access.
+    Normalized to lowercase 6-char hex without '#'. When multiple catalog entries
+    share the same hex (different materials or manufacturers), Bambu Lab wins,
+    then default entries, then the first encountered.
+    """
+    result = await db.execute(
+        select(
+            ColorCatalogEntry.hex_color,
+            ColorCatalogEntry.color_name,
+            ColorCatalogEntry.manufacturer,
+            ColorCatalogEntry.is_default,
+        )
+    )
+    mapping: dict[str, tuple[str, int]] = {}  # hex → (name, priority); higher priority wins
+    for hex_color, color_name, manufacturer, is_default in result.all():
+        if not hex_color or not color_name:
+            continue
+        key = hex_color.lstrip("#").lower()[:6]
+        if len(key) != 6:
+            continue
+        priority = 0
+        if manufacturer and manufacturer.strip().lower() == "bambu lab":
+            priority += 2
+        if is_default:
+            priority += 1
+        existing = mapping.get(key)
+        if existing is None or priority > existing[1]:
+            mapping[key] = (color_name, priority)
+    return {"colors": {k: v[0] for k, v in mapping.items()}}
 
 
 @router.post("/colors", response_model=ColorEntryResponse)
@@ -522,6 +561,7 @@ async def create_spool(
     await db.commit()
     await db.refresh(spool)
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool.id))
+    await ws_manager.broadcast({"type": "inventory_changed"})
     return result.scalar_one()
 
 
@@ -540,6 +580,7 @@ async def bulk_create_spools(
     await db.commit()
     ids = [s.id for s in spools]
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id.in_(ids)))
+    await ws_manager.broadcast({"type": "inventory_changed"})
     return list(result.scalars().all())
 
 
@@ -566,6 +607,7 @@ async def update_spool(
 
     await db.commit()
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
+    await ws_manager.broadcast({"type": "inventory_changed"})
     return result.scalar_one()
 
 
@@ -583,6 +625,7 @@ async def delete_spool(
 
     await db.delete(spool)
     await db.commit()
+    await ws_manager.broadcast({"type": "inventory_changed"})
     return {"status": "deleted"}
 
 
@@ -603,6 +646,7 @@ async def archive_spool(
     spool.archived_at = datetime.now(timezone.utc)
     await db.commit()
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
+    await ws_manager.broadcast({"type": "inventory_changed"})
     return result.scalar_one()
 
 
@@ -621,6 +665,7 @@ async def restore_spool(
     spool.archived_at = None
     await db.commit()
     result = await db.execute(select(Spool).options(selectinload(Spool.k_profiles)).where(Spool.id == spool_id))
+    await ws_manager.broadcast({"type": "inventory_changed"})
     return result.scalar_one()
 
 
@@ -741,7 +786,7 @@ async def list_assignments(
 async def assign_spool(
     data: SpoolAssignmentCreate,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
 ):
     """Assign a spool to an AMS slot and auto-configure via MQTT."""
     from backend.app.services.printer_manager import printer_manager
@@ -866,34 +911,39 @@ async def assign_spool(
                     # Use base_sf (version suffix stripped) for cloud API + MQTT
                     setting_id = base_sf
                     try:
-                        from backend.app.services.bambu_cloud import get_cloud_service
+                        from backend.app.api.routes.cloud import build_authenticated_cloud
 
-                        cloud = get_cloud_service()
-                        if cloud.is_authenticated:
-                            detail = await cloud.get_setting_detail(base_sf)
-                            if detail.get("filament_id"):
-                                tray_info_idx = detail["filament_id"]
-                                logger.info(
-                                    "Spool assign: resolved filament_id=%r from cloud for setting_id=%r",
-                                    tray_info_idx,
-                                    sf,
-                                )
-                                # Use cloud preset name for tray_sub_brands if available
-                                cloud_name = detail.get("name", "")
-                                if cloud_name:
-                                    tray_sub_brands = cloud_name.replace(r"@.*$", "").split("@")[0].strip()
-                            elif detail.get("base_id"):
-                                # Derive from base_id (e.g. "GFSL05" → "GFL05")
-                                bid = detail["base_id"].split("_")[0]
-                                if bid.startswith("GFS") and len(bid) >= 5:
-                                    tray_info_idx = f"GF{bid[3:]}"
-                                else:
-                                    tray_info_idx = bid
-                                logger.info(
-                                    "Spool assign: derived filament_id=%r from base_id=%r",
-                                    tray_info_idx,
-                                    detail["base_id"],
-                                )
+                        cloud = await build_authenticated_cloud(db, current_user)
+                        if cloud is not None and cloud.is_authenticated:
+                            try:
+                                detail = await cloud.get_setting_detail(base_sf)
+                                if detail.get("filament_id"):
+                                    tray_info_idx = detail["filament_id"]
+                                    logger.info(
+                                        "Spool assign: resolved filament_id=%r from cloud for setting_id=%r",
+                                        tray_info_idx,
+                                        sf,
+                                    )
+                                    # Use cloud preset name for tray_sub_brands if available
+                                    cloud_name = detail.get("name", "")
+                                    if cloud_name:
+                                        tray_sub_brands = cloud_name.replace(r"@.*$", "").split("@")[0].strip()
+                                elif detail.get("base_id"):
+                                    # Derive from base_id (e.g. "GFSL05" → "GFL05")
+                                    bid = detail["base_id"].split("_")[0]
+                                    if bid.startswith("GFS") and len(bid) >= 5:
+                                        tray_info_idx = f"GF{bid[3:]}"
+                                    else:
+                                        tray_info_idx = bid
+                                    logger.info(
+                                        "Spool assign: derived filament_id=%r from base_id=%r",
+                                        tray_info_idx,
+                                        detail["base_id"],
+                                    )
+                            finally:
+                                await cloud.close()
+                        elif cloud is not None:
+                            await cloud.close()
                     except Exception as e:
                         logger.warning("Spool assign: cloud lookup failed for %r: %s", sf, e)
 

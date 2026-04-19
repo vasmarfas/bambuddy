@@ -3,7 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Layers, Clock, Timer, Printer } from 'lucide-react';
-import { api } from '../api/client';
+import { api, withStreamToken } from '../api/client';
 import type { PrinterStatus } from '../api/client';
 import { formatDuration, formatETA, type TimeFormat } from '../utils/date';
 
@@ -21,6 +21,16 @@ interface OverlayConfig {
   showFilename: boolean;
   showStatus: boolean;
   showPrinter: boolean;
+}
+
+function formatPrintName(name: string | null, gcodeFile: string | null | undefined, t: (key: string, fallback: string, opts?: Record<string, unknown>) => string): string {
+  if (!name) return '';
+  if (!gcodeFile) return name;
+  const match = gcodeFile.match(/plate_(\d+)\.gcode/);
+  if (match && parseInt(match[1], 10) > 1) {
+    return `${name} — ${t('printers.plateNumber', 'Plate {{number}}', { number: match[1] })}`;
+  }
+  return name;
 }
 
 function parseConfig(params: URLSearchParams): OverlayConfig {
@@ -191,7 +201,7 @@ export function StreamOverlayPage() {
 
   const isPrinting = status.state === 'RUNNING' || status.state === 'PAUSE';
   const progress = status.progress || 0;
-  const streamUrl = `/api/v1/printers/${id}/camera/stream?fps=${config.fps}&t=${imageKey}`;
+  const streamUrl = withStreamToken(`/api/v1/printers/${id}/camera/stream?fps=${config.fps}&t=${imageKey}`);
 
   return (
     <div className="min-h-screen bg-black relative overflow-hidden">
@@ -235,7 +245,7 @@ export function StreamOverlayPage() {
           {/* Filename */}
           {config.showFilename && status.current_print && (
             <div className={`${sizes.textLarge} text-white font-semibold mb-2 truncate drop-shadow-md`}>
-              {status.current_print.replace(/\.gcode\.3mf$|\.3mf$|\.gcode$/i, '')}
+              {formatPrintName(status.current_print.replace(/\.gcode\.3mf$|\.3mf$|\.gcode$/i, ''), status.gcode_file, t)}
             </div>
           )}
 

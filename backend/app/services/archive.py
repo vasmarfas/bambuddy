@@ -8,7 +8,7 @@ from datetime import date, datetime, time, timezone
 from pathlib import Path
 
 from defusedxml import ElementTree as ET
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import settings
@@ -811,13 +811,21 @@ class ArchiveService:
                     # Fallback for archives without hash data: match by print name only.
                     name_conditions.append(PrintArchive.print_name.ilike(print_name))
             if makerworld_model_id:
-                # Match by MakerWorld model ID stored in extra_data (same design from MakerWorld)
-                # Use json_extract for SQLite compatibility (astext is PostgreSQL-only)
-                from sqlalchemy import func
+                # Match by MakerWorld model ID stored in extra_data
+                from backend.app.core.db_dialect import is_sqlite
 
-                name_conditions.append(
-                    func.json_extract(PrintArchive.extra_data, "$.makerworld_model_id") == str(makerworld_model_id)
-                )
+                if is_sqlite():
+                    from sqlalchemy import func
+
+                    name_conditions.append(
+                        func.json_extract(PrintArchive.extra_data, "$.makerworld_model_id") == str(makerworld_model_id)
+                    )
+                else:
+                    name_conditions.append(
+                        text("(extra_data::jsonb->>'makerworld_model_id') = :mw_id").bindparams(
+                            mw_id=str(makerworld_model_id)
+                        )
+                    )
 
             if name_conditions:
                 conditions.append(or_(*name_conditions))
@@ -846,6 +854,8 @@ class ArchiveService:
         print_data: dict | None = None,
         created_by_id: int | None = None,
         original_filename: str | None = None,
+        project_id: int | None = None,
+        subtask_id: str | None = None,
     ) -> PrintArchive | None:
         """Archive a 3MF file with metadata.
 
@@ -856,6 +866,11 @@ class ArchiveService:
             created_by_id: User ID who created this archive (optional, for user tracking)
             original_filename: Original human-readable filename (optional, for library files
                 stored with UUID names)
+            project_id: Project to associate this archive with (optional, set when triggered
+                from the project view)
+            subtask_id: MQTT-provided task identifier (optional). Used to match an
+                existing archive across a backend restart mid-print so the
+                original row can be resumed instead of cancelled (#972).
         """
         # Verify printer exists if specified
         if printer_id is not None:
@@ -966,6 +981,8 @@ class ArchiveService:
             quantity=quantity,
             extra_data=metadata,
             created_by_id=created_by_id,
+            project_id=project_id,
+            subtask_id=subtask_id,
         )
 
         self.db.add(archive)

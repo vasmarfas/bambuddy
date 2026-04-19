@@ -8,7 +8,7 @@ from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.core.auth import RequirePermissionIfAuthEnabled
+from backend.app.core.auth import RequireCameraStreamTokenIfAuthEnabled, RequirePermissionIfAuthEnabled
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
@@ -29,9 +29,11 @@ from backend.app.schemas.printer import (
     PrintOptionsResponse,
 )
 from backend.app.services.bambu_ftp import (
+    cache_3mf_download,
     delete_file_async,
     download_file_bytes_async,
     download_file_try_paths_async,
+    get_cached_3mf,
     get_storage_info_async,
     list_files_async,
 )
@@ -583,6 +585,7 @@ async def get_printer_status(
         ipcam=state.ipcam,
         wifi_signal=state.wifi_signal,
         wired_network=state.wired_network,
+        door_open=state.door_open,
         nozzles=nozzles,
         nozzle_rack=nozzle_rack,
         print_options=print_options,
@@ -607,7 +610,7 @@ async def get_printer_status(
         heatbreak_fan_speed=state.heatbreak_fan_speed,
         firmware_version=state.firmware_version,
         developer_mode=state.developer_mode if state else None,
-        plate_cleared=printer_manager.is_plate_cleared(printer_id),
+        awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
         supports_drying=supports_drying(printer.model, state.firmware_version),
     )
 
@@ -714,8 +717,8 @@ async def get_printer_cover(
     printer_id: int,
     view: str | None = None,
     db: AsyncSession = Depends(get_db),
+    _: None = RequireCameraStreamTokenIfAuthEnabled,
 ):
-    # Note: No auth required - this is an image asset loaded via <img src> which can't send auth headers
     """Get the cover image for the current print job.
 
     Args:
@@ -791,42 +794,60 @@ async def get_printer_cover(
     temp_path = settings.archive_dir / "temp" / f"cover_{printer_id}_{temp_filename}"
     temp_path.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info(
-        f"Trying to download cover for '{subtask_name}' from {printer.ip_address} (trying {len(remote_paths)} paths)"
-    )
-
-    # Retry logic for transient FTP failures
-    max_retries = 2
-    last_error = None
+    # Cache check (#972): the archive-metadata flow in main.py may have already
+    # downloaded this 3MF during the print-start handler. Reusing that file
+    # avoids a second 36MB transfer competing with the printer's single FTP
+    # socket (which produces the 425 errors that feed the retry storm).
     downloaded = False
-
-    for attempt in range(max_retries + 1):
-        try:
-            downloaded = await download_file_try_paths_async(
-                printer.ip_address,
-                printer.access_code,
-                remote_paths,
-                temp_path,
-                printer_model=printer.model,
-            )
-            if downloaded:
-                break
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries:
-                logger.warning("FTP download attempt %s failed: %s, retrying...", attempt + 1, e)
-                await asyncio.sleep(0.5 * (attempt + 1))  # Brief backoff
-            else:
-                logger.error("FTP download failed after %s attempts: %s", max_retries + 1, e)
-
-    if last_error and not downloaded:
-        raise HTTPException(503, f"FTP download temporarily unavailable: {last_error}")
+    using_cached = False
+    for candidate_name in possible_filenames:
+        cached = get_cached_3mf(printer_id, candidate_name)
+        if cached:
+            logger.info("Cover using cached 3MF from %s (avoided duplicate FTP)", cached)
+            temp_path = cached
+            downloaded = True
+            using_cached = True
+            break
 
     if not downloaded:
-        raise HTTPException(
-            404,
-            f"Could not download 3MF file for '{subtask_name}' from printer {printer.ip_address}. Tried: {possible_filenames}",
+        logger.info(
+            f"Trying to download cover for '{subtask_name}' from {printer.ip_address} (trying {len(remote_paths)} paths)"
         )
+
+        # Retry logic for transient FTP failures
+        max_retries = 2
+        last_error = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                downloaded = await download_file_try_paths_async(
+                    printer.ip_address,
+                    printer.access_code,
+                    remote_paths,
+                    temp_path,
+                    printer_model=printer.model,
+                )
+                if downloaded:
+                    break
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    logger.warning("FTP download attempt %s failed: %s, retrying...", attempt + 1, e)
+                    await asyncio.sleep(0.5 * (attempt + 1))  # Brief backoff
+                else:
+                    logger.error("FTP download failed after %s attempts: %s", max_retries + 1, e)
+
+        if last_error and not downloaded:
+            raise HTTPException(503, f"FTP download temporarily unavailable: {last_error}")
+
+        if not downloaded:
+            raise HTTPException(
+                404,
+                f"Could not download 3MF file for '{subtask_name}' from printer {printer.ip_address}. Tried: {possible_filenames}",
+            )
+
+        # Share the fresh download with the archive flow.
+        cache_3mf_download(printer_id, temp_filename, temp_path)
 
     # Verify file actually exists and has content
     if not temp_path.exists():
@@ -836,7 +857,8 @@ async def get_printer_cover(
     logger.info("Downloaded file size: %s bytes", file_size)
 
     if file_size == 0:
-        temp_path.unlink()
+        if not using_cached:
+            temp_path.unlink()
         raise HTTPException(500, f"Downloaded file is empty for '{subtask_name}'")
 
     try:
@@ -899,7 +921,10 @@ async def get_printer_cover(
             zf.close()
 
     finally:
-        if temp_path.exists():
+        # Only delete when this invocation owns the file. A cached path is
+        # shared with the archive flow — removing it would force a refetch
+        # the next time either flow needs the 3MF.
+        if not using_cached and temp_path.exists():
             temp_path.unlink()
 
 
@@ -1491,6 +1516,49 @@ async def start_drying(
         raise HTTPException(400, "Temperature must be 45-85°C")
     if duration < 1 or duration > 24:
         raise HTTPException(400, "Duration must be 1-24 hours")
+
+    # Inspect the live AMS unit: surface blocking dry_sf_reasons (otherwise the
+    # firmware silently ignores the command — #971) and backfill an empty
+    # filament field from the first loaded tray so the printer doesn't reject
+    # the payload.
+    target_ams: dict | None = None
+    for unit in (live_state.raw_data.get("ams") if live_state else None) or []:
+        try:
+            if int(unit.get("id", -1)) == ams_id:
+                target_ams = unit
+                break
+        except (TypeError, ValueError):
+            continue
+
+    if target_ams is not None:
+        reason_messages = {
+            0: "Printer is busy",
+            1: "Insufficient power — too many AMS drying or external PSU required",
+            2: "AMS is busy",
+            3: "Filament is at the AMS outlet — retract it first",
+            4: "AMS is already starting a drying cycle",
+            5: "Not supported in 2D mode",
+            6: "AMS is already drying",
+            7: "AMS firmware is upgrading",
+            8: "Plug in the external AMS power adapter to start drying",
+        }
+        for code in target_ams.get("dry_sf_reason") or []:
+            try:
+                code_int = int(code)
+            except (TypeError, ValueError):
+                continue
+            if code_int in reason_messages:
+                raise HTTPException(409, reason_messages[code_int])
+
+        if not filament:
+            for tray in target_ams.get("tray") or []:
+                tray_type = tray.get("tray_type")
+                if tray_type:
+                    filament = str(tray_type)
+                    break
+
+    if not filament:
+        filament = "PLA"
 
     success = printer_manager.send_drying_command(
         printer_id, ams_id, temp, duration, mode=1, filament=filament, rotate_tray=rotate_tray
@@ -2246,13 +2314,18 @@ async def clear_plate(
     if not printer_manager.is_connected(printer_id):
         raise HTTPException(400, "Printer not connected")
 
+    # Accept the acknowledgment whenever the printer is awaiting it — not only when the
+    # reported state is FINISH/FAILED. After a power cycle the printer boots into IDLE
+    # but the awaiting flag persists, and the user still needs a way to ack it (#961).
     state = printer_manager.get_status(printer_id)
-    if not state or state.state not in ("FINISH", "FAILED"):
+    awaiting = printer_manager.is_awaiting_plate_clear(printer_id)
+    if not awaiting and (not state or state.state not in ("FINISH", "FAILED")):
         raise HTTPException(
-            400, f"Printer is not in FINISH or FAILED state (current: {state.state if state else 'unknown'})"
+            400,
+            f"Printer is not awaiting plate-clear acknowledgment (state={state.state if state else 'unknown'})",
         )
 
-    printer_manager.set_plate_cleared(printer_id)
+    printer_manager.set_awaiting_plate_clear(printer_id, False)
 
     return {"success": True, "message": "Plate cleared, next print will start shortly"}
 
@@ -2328,6 +2401,33 @@ async def set_print_speed(
     return {"success": True, "message": f"Print speed set to {speed_names.get(mode, 'Unknown')}"}
 
 
+@router.post("/{printer_id}/airduct-mode")
+async def set_airduct_mode(
+    printer_id: int,
+    mode: str = Query(..., description="Airduct mode: 'cooling' or 'heating'"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set the airduct mode (cooling/heating) on supported printers (P2S/H2*)."""
+    if mode not in ("cooling", "heating"):
+        raise HTTPException(400, "Mode must be 'cooling' or 'heating'")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    success = client.set_airduct_mode(mode)
+    if not success:
+        raise HTTPException(500, "Failed to set airduct mode")
+
+    return {"success": True, "message": f"Airduct mode set to {mode}"}
+
+
 @router.post("/{printer_id}/chamber-light")
 async def set_chamber_light(
     printer_id: int,
@@ -2350,6 +2450,81 @@ async def set_chamber_light(
         raise HTTPException(500, "Failed to control chamber light")
 
     return {"success": True, "message": f"Chamber light {'on' if on else 'off'}"}
+
+
+@router.post("/{printer_id}/bed-jog")
+async def bed_jog(
+    printer_id: int,
+    distance: float = Query(
+        ..., description="Relative Z distance in mm (positive = bed down / nozzle further away, negative = bed up)"
+    ),
+    force: bool = Query(False, description="If true, bypass soft endstops via M211 (for use when Z is not homed)"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move the build plate along the Z axis by a relative distance.
+
+    Emits a short G-code sequence via MQTT. When ``force`` is true the soft
+    endstops are disabled for the duration of the move, matching the
+    "ignore and move anyway" option Bambu Studio offers when the printer
+    is not homed.
+    """
+    if distance == 0 or abs(distance) > 200:
+        raise HTTPException(400, "Distance must be non-zero and ≤ 200 mm")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    lines = []
+    if force:
+        lines.append("M211 S0")
+    lines += ["G91", f"G1 Z{distance:.2f} F600", "G90"]
+    if force:
+        lines.append("M211 S1")
+
+    if not client.send_gcode("\n".join(lines)):
+        raise HTTPException(500, "Failed to send bed-jog command")
+
+    return {"success": True, "message": f"Bed jog {distance:+.1f} mm sent"}
+
+
+@router.post("/{printer_id}/home-axes")
+async def home_axes(
+    printer_id: int,
+    axes: str = Query("z", description="Axes to home: 'z', 'xy', or 'all'"),
+    _=RequirePermissionIfAuthEnabled(Permission.PRINTERS_CONTROL),
+    db: AsyncSession = Depends(get_db),
+):
+    """Home one or more axes via G28."""
+    axes = axes.lower()
+    if axes == "z":
+        gcode = "G28 Z"
+    elif axes == "xy":
+        gcode = "G28 X Y"
+    elif axes == "all":
+        gcode = "G28"
+    else:
+        raise HTTPException(400, "axes must be 'z', 'xy', or 'all'")
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if not printer:
+        raise HTTPException(404, "Printer not found")
+
+    client = printer_manager.get_client(printer_id)
+    if not client:
+        raise HTTPException(400, "Printer not connected")
+
+    if not client.send_gcode(gcode):
+        raise HTTPException(500, "Failed to send home command")
+
+    return {"success": True, "message": f"Home {axes} command sent"}
 
 
 @router.post("/{printer_id}/hms/clear")

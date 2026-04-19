@@ -21,6 +21,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         "X1",
         "X1C",
         "X1E",  # X1 series
+        "X2D",  # X2 series
         "P2S",  # P2 series
         "H2C",
         "H2D",
@@ -29,6 +30,7 @@ CHAMBER_TEMP_SUPPORTED_MODELS = frozenset(
         # Internal codes (from MQTT/SSDP)
         "BL-P001",  # X1/X1C
         "C13",  # X1E
+        "N6",  # X2D
         "O1D",  # H2D
         "O1C",  # H2C
         "O1C2",  # H2C (dual nozzle variant)
@@ -100,15 +102,16 @@ def has_stg_cur_idle_bug(model: str | None) -> bool:
 # incorrectly gate X1E (matched by "X1") and H2D Pro (matched by "H2D").
 _DRYING_MIN_FIRMWARE: dict[str, str] = {
     "H2D": "01.02.30.00",
+    "H2S": "01.02.00.00",
     "X1": "01.09.00.00",
     "X1C": "01.09.00.00",
     "P1P": "01.08.00.00",
     "P1S": "01.08.00.00",
+    "P2S": "01.02.00.00",
+    "N7": "01.02.00.00",  # P2S internal model code
 }
 # Models that definitely don't support AMS drying (no AMS 2 Pro / AMS-HT compatibility)
-_DRYING_UNSUPPORTED_MODELS = frozenset(
-    {"P2S", "A1", "A1MINI", "A1-MINI", "A1 MINI", "H2S", "H2C", "N7", "O1C", "O1C2", "O1S", "N1", "N2S"}
-)
+_DRYING_UNSUPPORTED_MODELS = frozenset({"A1", "A1MINI", "A1-MINI", "A1 MINI", "H2C", "O1C", "O1C2", "O1S", "N1", "N2S"})
 
 
 def supports_drying(model: str | None, firmware: str | None) -> bool:
@@ -150,11 +153,14 @@ class PrinterManager:
         self._on_status_change: Callable[[int, PrinterState], None] | None = None
         self._on_ams_change: Callable[[int, list], None] | None = None
         self._on_layer_change: Callable[[int, int], None] | None = None
+        self._on_bed_temp_update: Callable[[int, float], None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         # Track who started the current print (Issue #206)
         self._current_print_user: dict[int, dict] = {}  # {printer_id: {"user_id": int, "username": str}}
-        # Track plate-cleared acknowledgments for queue flow
-        self._plate_cleared: set[int] = set()  # printer_ids where user confirmed plate is cleared
+        # Track printers awaiting plate-clear acknowledgment after a finished/failed print.
+        # Persisted to DB (printers.awaiting_plate_clear) so the gate survives restarts/power
+        # cycles — see issue #961. Loaded into this set at startup via load_awaiting_plate_clear_from_db().
+        self._awaiting_plate_clear: set[int] = set()
 
     def get_printer(self, printer_id: int) -> PrinterInfo | None:
         """Get printer info by ID."""
@@ -172,17 +178,53 @@ class PrinterManager:
         """Clear the current print user when print completes (Issue #206)."""
         self._current_print_user.pop(printer_id, None)
 
-    def set_plate_cleared(self, printer_id: int):
-        """Mark that user has cleared the build plate for this printer."""
-        self._plate_cleared.add(printer_id)
+    def is_awaiting_plate_clear(self, printer_id: int) -> bool:
+        """Return True when the printer finished/failed a print and is waiting for the
+        user to acknowledge the plate is cleared before the queue may dispatch the next job.
+        """
+        return printer_id in self._awaiting_plate_clear
 
-    def is_plate_cleared(self, printer_id: int) -> bool:
-        """Check if user has confirmed the plate is cleared."""
-        return printer_id in self._plate_cleared
+    def set_awaiting_plate_clear(self, printer_id: int, awaiting: bool):
+        """Set/clear the awaiting-plate-clear gate and persist it to DB.
 
-    def consume_plate_cleared(self, printer_id: int):
-        """Clear the plate-cleared flag (called when scheduler starts next print)."""
-        self._plate_cleared.discard(printer_id)
+        Persisted so the gate survives Bambuddy/printer restarts (#961): after Auto Off
+        cycles the printer, the printer boots into IDLE with no memory of the previous
+        finish, and without persistence the queue would bypass the confirmation prompt.
+        """
+        if awaiting:
+            self._awaiting_plate_clear.add(printer_id)
+        else:
+            self._awaiting_plate_clear.discard(printer_id)
+        # Only create the coroutine when there is a loop to run it on — otherwise Python
+        # emits "coroutine was never awaited" warnings (e.g. in sync unit tests).
+        if self._loop and self._loop.is_running():
+            self._schedule_async(self._persist_awaiting_plate_clear(printer_id, awaiting))
+
+    async def _persist_awaiting_plate_clear(self, printer_id: int, awaiting: bool):
+        from backend.app.core.database import async_session
+
+        try:
+            async with async_session() as db:
+                printer = await db.get(Printer, printer_id)
+                if printer is not None:
+                    printer.awaiting_plate_clear = awaiting
+                    await db.commit()
+        except Exception as e:
+            logger.warning("Failed to persist awaiting_plate_clear for printer %d: %s", printer_id, e)
+
+    async def load_awaiting_plate_clear_from_db(self):
+        """Rehydrate the awaiting-plate-clear set from the printers table on startup."""
+        from backend.app.core.database import async_session
+
+        try:
+            async with async_session() as db:
+                result = await db.execute(select(Printer.id).where(Printer.awaiting_plate_clear.is_(True)))
+                ids = {row[0] for row in result.all()}
+                self._awaiting_plate_clear = ids
+                if ids:
+                    logger.info("Loaded %d printer(s) awaiting plate-clear acknowledgment: %s", len(ids), sorted(ids))
+        except Exception as e:
+            logger.warning("Failed to load awaiting_plate_clear from DB: %s", e)
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop):
         """Set the event loop for async callbacks."""
@@ -207,6 +249,10 @@ class PrinterManager:
     def set_layer_change_callback(self, callback: Callable[[int, int], None]):
         """Set callback for layer change events. Receives (printer_id, layer_num)."""
         self._on_layer_change = callback
+
+    def set_bed_temp_update_callback(self, callback: Callable[[int, float], None]):
+        """Set callback for bed temperature updates. Receives (printer_id, bed_temp)."""
+        self._on_bed_temp_update = callback
 
     def _schedule_async(self, coro):
         """Schedule an async coroutine from a sync context.
@@ -255,6 +301,10 @@ class PrinterManager:
             if self._on_layer_change:
                 self._schedule_async(self._on_layer_change(printer_id, layer_num))
 
+        def on_bed_temp_update(bed_temp: float):
+            if self._on_bed_temp_update:
+                self._schedule_async(self._on_bed_temp_update(printer_id, bed_temp))
+
         client = BambuMQTTClient(
             ip_address=printer.ip_address,
             serial_number=printer.serial_number,
@@ -265,6 +315,7 @@ class PrinterManager:
             on_print_complete=on_print_complete,
             on_ams_change=on_ams_change,
             on_layer_change=on_layer_change,
+            on_bed_temp_update=on_bed_temp_update,
         )
 
         client.connect()
@@ -520,9 +571,11 @@ def get_derived_status_name(state: PrinterState, model: str | None = None) -> st
         state: The printer state to analyze
         model: Optional printer model for model-specific workarounds
     """
-    # A1/A1 Mini firmware bug: some versions report stg_cur=0 when idle
-    # Only correct this specific case (IDLE + stg_cur=0) for affected models
-    if state.state == "IDLE" and state.stg_cur == 0 and has_stg_cur_idle_bug(model):
+    # Firmware bug: some models (A1, P1P, P1S) report stg_cur=0 when not printing.
+    # stg_cur=0 maps to "Printing" in STAGE_NAMES, which incorrectly overrides the
+    # real state (IDLE, FINISH, FAILED, etc.). Only trust stg_cur when the printer
+    # is actually in an active print state (RUNNING or PAUSE).
+    if state.state not in ("RUNNING", "PAUSE") and state.stg_cur == 0 and has_stg_cur_idle_bug(model):
         return None
 
     # If we have a valid calibration stage, use it
@@ -673,7 +726,13 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
 
     # Parse virtual tray (external spool) — now a list
     if "vt_tray" in raw_data:
-        for vt_data in raw_data["vt_tray"]:
+        vt_tray_raw = raw_data["vt_tray"]
+        # Defensive: MQTT sends vt_tray as a dict; normalize to list
+        if isinstance(vt_tray_raw, dict):
+            vt_tray_raw = [vt_tray_raw]
+        elif not isinstance(vt_tray_raw, list):
+            vt_tray_raw = []
+        for vt_data in vt_tray_raw:
             vt_tag_uid = vt_data.get("tag_uid")
             if vt_tag_uid in ("", "0000000000000000"):
                 vt_tag_uid = None
@@ -744,6 +803,7 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
         # WiFi signal strength
         "wifi_signal": state.wifi_signal,
         "wired_network": state.wired_network,
+        "door_open": state.door_open,
         # Calibration stage tracking
         "stg_cur": state.stg_cur,
         "stg_cur_name": get_derived_status_name(state, model),
@@ -758,6 +818,8 @@ def printer_state_to_dict(state: PrinterState, printer_id: int | None = None, mo
         "chamber_light": state.chamber_light,
         # Active extruder for dual-nozzle printers (0=right, 1=left)
         "active_extruder": state.active_extruder,
+        # Print speed mode (1=silent, 2=standard, 3=sport, 4=ludicrous)
+        "speed_level": state.speed_level,
         # H2C nozzle rack (tool-changer dock positions)
         # Map raw MQTT field names (type/diameter) to schema names (nozzle_type/nozzle_diameter)
         "nozzle_rack": [

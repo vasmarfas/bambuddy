@@ -1,13 +1,22 @@
+from datetime import datetime, timezone
+from typing import Annotated
+
+import jwt as _jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.api.routes.settings import get_external_login_url
 from backend.app.core.auth import (
+    ALGORITHM,
+    SECRET_KEY,
     RequirePermissionIfAuthEnabled,
     get_current_user_optional,
     get_password_hash,
+    revoke_jti,
+    security,
     verify_password,
 )
 from backend.app.core.database import get_db
@@ -38,6 +47,7 @@ def _user_to_response(user: User) -> UserResponse:
         role=user.role,
         is_active=user.is_active,
         is_admin=user.is_admin,
+        auth_source=getattr(user, "auth_source", "local"),
         groups=[GroupBrief(id=g.id, name=g.name) for g in user.groups],
         permissions=sorted(user.get_permissions()),
         created_at=user.created_at.isoformat(),
@@ -253,6 +263,11 @@ async def update_user(
         user.email = user_data.email
 
     if user_data.password is not None:
+        if getattr(user, "auth_source", "local") == "ldap":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot set password for LDAP users",
+            )
         user.password_hash = get_password_hash(user_data.password)
 
     if user_data.role is not None:
@@ -392,6 +407,7 @@ async def delete_user(
 @router.post("/me/change-password", response_model=dict)
 async def change_own_password(
     password_data: ChangePasswordRequest,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)] = None,
     current_user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ):
@@ -402,18 +418,30 @@ async def change_own_password(
             detail="Authentication required to change password",
         )
 
+    # Block password change for LDAP users
+    if getattr(current_user, "auth_source", "local") == "ldap":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change password for LDAP users — passwords are managed by the LDAP server",
+        )
+
     # Verify current password
+    if not current_user.password_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Account has no local password set",
+        )
+
+    # Rate-limit failed password-change attempts (H-R5-A)
+    from backend.app.api.routes.mfa import MAX_2FA_ATTEMPTS, check_rate_limit, record_failed_attempt
+
+    await check_rate_limit(db, current_user.username, event_type="password_change", max_attempts=MAX_2FA_ATTEMPTS)
+
     if not verify_password(password_data.current_password, current_user.password_hash):
+        await record_failed_attempt(db, current_user.username, event_type="password_change")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Current password is incorrect",
-        )
-
-    # Validate new password
-    if len(password_data.new_password) < 6:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password must be at least 6 characters",
         )
 
     # Fetch user from this session to ensure changes are persisted
@@ -427,6 +455,32 @@ async def change_own_password(
 
     # Update password
     user.password_hash = get_password_hash(password_data.new_password)
+    user.password_changed_at = datetime.now(timezone.utc)  # M-R7-B: invalidate all prior JWTs
     await db.commit()
+
+    # L-R6-A: Password verified successfully — reset the failure counter
+    from backend.app.api.routes.mfa import clear_failed_attempts
+
+    await clear_failed_attempts(db, user.username, event_type="password_change")
+
+    # Revoke the current session token so the caller must re-authenticate (M-R5-A)
+    if credentials is not None:
+        try:
+            payload = _jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            if jti and exp:
+                try:
+                    await revoke_jti(jti, datetime.fromtimestamp(exp, tz=timezone.utc), user.username)
+                except Exception as exc:
+                    # B4: log so operators know revocation is broken; password was
+                    # already changed so the token will fail freshness checks anyway.
+                    import logging
+
+                    logging.getLogger(__name__).error(
+                        "Failed to revoke JTI after password change for user %s: %s", user.username, exc
+                    )
+        except Exception:
+            pass  # Decode failure is harmless — token is already invalidated by password_changed_at
 
     return {"message": "Password changed successfully"}

@@ -1,11 +1,12 @@
 import io
 import logging
+import os
 import zipfile
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,13 +56,9 @@ async def get_external_login_url(db: AsyncSession) -> str:
 
 async def set_setting(db: AsyncSession, key: str, value: str) -> None:
     """Set a single setting value."""
-    from sqlalchemy import func
-    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    from backend.app.core.db_dialect import upsert_setting
 
-    # Use upsert (INSERT ... ON CONFLICT UPDATE) for reliability
-    stmt = sqlite_insert(Settings).values(key=key, value=value)
-    stmt = stmt.on_conflict_do_update(index_elements=["key"], set_={"value": value, "updated_at": func.now()})
-    await db.execute(stmt)
+    await upsert_setting(db, Settings, key, value)
 
 
 @router.get("", response_model=AppSettings)
@@ -88,6 +85,7 @@ async def get_settings(
                 "spoolman_disable_weight_sync",
                 "spoolman_report_partial_usage",
                 "disable_filament_warnings",
+                "prefer_lowest_filament",
                 "check_updates",
                 "check_printer_firmware",
                 "include_beta_updates",
@@ -102,6 +100,15 @@ async def get_settings(
                 "queue_drying_enabled",
                 "queue_drying_block",
                 "ambient_drying_enabled",
+                "require_plate_clear",
+                "queue_shortest_first",
+                "default_bed_levelling",
+                "default_flow_cali",
+                "default_vibration_cali",
+                "default_layer_inspect",
+                "default_timelapse",
+                "ldap_enabled",
+                "ldap_auto_provision",
             ]:
                 settings_dict[setting.key] = setting.value.lower() == "true"
             elif setting.key in [
@@ -121,6 +128,8 @@ async def get_settings(
                 "ftp_retry_delay",
                 "ftp_timeout",
                 "mqtt_port",
+                "stagger_group_size",
+                "stagger_interval_minutes",
             ]:
                 settings_dict[setting.key] = int(setting.value)
             elif setting.key == "default_printer_id":
@@ -132,6 +141,9 @@ async def get_settings(
     # Get Home Assistant settings (with environment variable overrides)
     ha_settings = await get_homeassistant_settings(db)
     settings_dict.update(ha_settings)
+
+    # Never return LDAP bind password in API responses
+    settings_dict["ldap_bind_password"] = ""
 
     return AppSettings(**settings_dict)
 
@@ -339,79 +351,322 @@ async def get_homeassistant_settings(db: AsyncSession) -> dict:
     }
 
 
+async def create_backup_zip(output_path: Path | None = None) -> tuple[Path, str]:
+    """Create a complete backup ZIP (database + all data directories).
+
+    If output_path is given, the ZIP is written there.
+    Otherwise a temporary file is created (caller must clean up).
+    Returns (zip_path, filename).
+    """
+    import shutil
+    import tempfile
+
+    from backend.app.core.db_dialect import is_sqlite
+
+    base_dir = app_settings.base_dir
+    filename = f"bambuddy-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+
+        if is_sqlite():
+            from sqlalchemy import text
+
+            from backend.app.core.database import engine
+
+            db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
+
+            # Checkpoint WAL to ensure all data is in main db file
+            async with engine.begin() as conn:
+                await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+
+            # Copy database file
+            shutil.copy2(db_path, temp_path / "bambuddy.db")
+        else:
+            # PostgreSQL: export to a portable SQLite file via SQLAlchemy.
+            # This makes backups restorable on both SQLite and Postgres installs.
+            import json
+            import sqlite3
+
+            from backend.app.core.database import Base, engine
+
+            backup_db_path = temp_path / "bambuddy.db"
+            dst = sqlite3.connect(str(backup_db_path))
+            metadata = Base.metadata
+
+            # Create tables in SQLite backup (simplified — just column names and types)
+            for table in metadata.sorted_tables:
+                cols = []
+                pk_cols = [col.name for col in table.columns if col.primary_key]
+                for col in table.columns:
+                    col_type = "TEXT"  # Default
+                    type_str = str(col.type).upper()
+                    if "INT" in type_str:
+                        col_type = "INTEGER"
+                    elif "FLOAT" in type_str or "REAL" in type_str or "NUMERIC" in type_str:
+                        col_type = "REAL"
+                    elif "BOOL" in type_str:
+                        col_type = "BOOLEAN"
+                    # Only inline PRIMARY KEY for single-column PKs
+                    pk = " PRIMARY KEY" if col.primary_key and len(pk_cols) == 1 else ""
+                    cols.append(f"{col.name} {col_type}{pk}")
+                # Add composite primary key constraint if needed
+                if len(pk_cols) > 1:
+                    cols.append(f"PRIMARY KEY ({', '.join(pk_cols)})")
+                dst.execute(f"CREATE TABLE IF NOT EXISTS {table.name} ({', '.join(cols)})")  # noqa: S608
+
+            # Export data from Postgres to SQLite
+            async with engine.connect() as conn:
+                for table in metadata.sorted_tables:
+                    result = await conn.execute(table.select())
+                    rows = result.fetchall()
+                    if not rows:
+                        continue
+                    columns = list(result.keys())
+                    placeholders = ", ".join(["?"] * len(columns))
+                    col_list = ", ".join(columns)
+                    insert_sql = f"INSERT INTO {table.name} ({col_list}) VALUES ({placeholders})"  # noqa: S608  # nosec B608 — table/column names from ORM metadata, not user input
+
+                    def _serialize_row(row):
+                        return tuple(json.dumps(v) if isinstance(v, (list, dict)) else v for v in row)
+
+                    dst.executemany(insert_sql, [_serialize_row(row) for row in rows])
+
+            dst.commit()
+            dst.close()
+            logger.info("PostgreSQL backup exported to portable SQLite format")
+
+        # Copy data directories (if they exist)
+        dirs_to_backup = [
+            ("archive", base_dir / "archive"),
+            ("virtual_printer", base_dir / "virtual_printer"),
+            ("plate_calibration", app_settings.plate_calibration_dir),
+            ("icons", base_dir / "icons"),
+            ("projects", base_dir / "projects"),
+        ]
+
+        for name, src_dir in dirs_to_backup:
+            if src_dir.exists() and any(src_dir.iterdir()):
+                try:
+                    shutil.copytree(src_dir, temp_path / name)
+                except shutil.Error as e:
+                    logger.warning("Some files in %s could not be copied: %s", name, e)
+                except PermissionError as e:
+                    logger.warning("Permission denied copying %s: %s", name, e)
+
+        # Create ZIP
+        if output_path is not None:
+            zip_file = output_path / filename
+        else:
+            fd, tmp = tempfile.mkstemp(suffix=".zip")
+            os.close(fd)
+            zip_file = Path(tmp)
+
+        with zipfile.ZipFile(zip_file, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file_path in temp_path.rglob("*"):
+                if file_path.is_file():
+                    arcname = file_path.relative_to(temp_path)
+                    zf.write(file_path, arcname)
+
+    return zip_file, filename
+
+
 @router.get("/backup")
 async def create_backup(
     db: AsyncSession = Depends(get_db),
     _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_BACKUP),
 ):
-    """Create a complete backup (database + all files) as a ZIP.
-
-    This is a simplified backup that includes the entire SQLite database
-    and all data directories. It is complete by definition and cannot miss data.
-    """
-    import shutil
-    import tempfile
-
-    from sqlalchemy import text
-
-    from backend.app.core.database import engine
+    """Create a complete backup (database + all files) as a ZIP download."""
+    from starlette.background import BackgroundTask
 
     try:
-        base_dir = app_settings.base_dir
-        db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-
-            # 1. Checkpoint WAL to ensure all data is in main db file
-            async with engine.begin() as conn:
-                await conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
-
-            # 2. Copy database file
-            shutil.copy2(db_path, temp_path / "bambuddy.db")
-
-            # 3. Copy data directories (if they exist)
-            dirs_to_backup = [
-                ("archive", base_dir / "archive"),
-                ("virtual_printer", base_dir / "virtual_printer"),
-                ("plate_calibration", app_settings.plate_calibration_dir),
-                ("icons", base_dir / "icons"),
-                ("projects", base_dir / "projects"),
-            ]
-
-            for name, src_dir in dirs_to_backup:
-                if src_dir.exists() and any(src_dir.iterdir()):
-                    try:
-                        shutil.copytree(src_dir, temp_path / name)
-                    except shutil.Error as e:
-                        # Some files may have restricted permissions (e.g., SSL keys)
-                        # Log the error but continue with partial backup
-                        logger.warning("Some files in %s could not be copied: %s", name, e)
-                    except PermissionError as e:
-                        logger.warning("Permission denied copying %s: %s", name, e)
-
-            # 4. Create ZIP
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                for file_path in temp_path.rglob("*"):
-                    if file_path.is_file():
-                        arcname = file_path.relative_to(temp_path)
-                        zf.write(file_path, arcname)
-
-            zip_buffer.seek(0)
-            filename = f"bambuddy-backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
-
-            return StreamingResponse(
-                zip_buffer,
-                media_type="application/zip",
-                headers={"Content-Disposition": f"attachment; filename={filename}"},
-            )
+        zip_file, filename = await create_backup_zip()
+        return FileResponse(
+            path=zip_file,
+            filename=filename,
+            media_type="application/zip",
+            background=BackgroundTask(lambda: zip_file.unlink(missing_ok=True)),
+        )
     except Exception as e:
         logger.error("Backup failed: %s", e, exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"success": False, "message": "Backup failed. Check server logs for details."},
         )
+
+
+async def _import_sqlite_to_postgres(sqlite_path: Path, postgres_url: str):
+    """Import data from a SQLite database file into the current PostgreSQL database.
+
+    Used for cross-database restore (SQLite backup → PostgreSQL).
+    Reads all tables from the SQLite file and bulk-inserts into Postgres.
+    """
+    import sqlite3
+
+    from sqlalchemy import text
+
+    from backend.app.core.database import Base, _create_engine
+
+    # Create a temporary engine for the import (current engine was disposed)
+    pg_engine = _create_engine()
+
+    try:
+        # Open SQLite file directly (sync — it's a local file read)
+        src = sqlite3.connect(str(sqlite_path))
+        src.row_factory = sqlite3.Row
+
+        # Get list of tables from SQLite (skip internal/FTS tables)
+        cursor = src.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'archive_fts%'"
+        )
+        src_tables = {row["name"] for row in cursor.fetchall()}
+
+        # Get Postgres tables from our ORM models
+        metadata = Base.metadata
+        pg_tables = set(metadata.tables.keys())
+
+        # Only import tables that exist in both source and destination
+        tables_to_import = src_tables & pg_tables
+        sorted_tables = [t.name for t in metadata.sorted_tables if t.name in tables_to_import]
+
+        # Phase 1: Drop all tables and recreate WITHOUT foreign keys.
+        # This avoids all FK ordering/orphan issues during import.
+        saved_fks = {}
+        for table in metadata.sorted_tables:
+            fks = list(table.foreign_key_constraints)
+            if fks:
+                saved_fks[table.name] = fks
+                for fk in fks:
+                    table.constraints.discard(fk)
+
+        async with pg_engine.begin() as conn:
+            await conn.run_sync(metadata.drop_all)
+            await conn.run_sync(metadata.create_all)
+
+        # Restore FK definitions in metadata (needed for re-adding later)
+        for table_name, fks in saved_fks.items():
+            table_obj = metadata.tables[table_name]
+            for fk in fks:
+                table_obj.constraints.add(fk)
+
+        # Phase 2: Import data (no FKs to worry about)
+        async with pg_engine.begin() as conn:
+            # Import each table in dependency order (parents before children)
+            for table_name in sorted_tables:
+                rows = src.execute(f"SELECT * FROM {table_name}").fetchall()  # noqa: S608  # nosec B608
+                if not rows:
+                    continue
+
+                # Filter to columns that exist in the Postgres table
+                src_columns = rows[0].keys()
+                pg_table = metadata.tables.get(table_name)
+                pg_columns = {c.name for c in pg_table.columns} if pg_table is not None else set()
+                columns = [c for c in src_columns if c in pg_columns]
+
+                if not columns:
+                    continue
+
+                col_list = ", ".join(columns)
+                param_list = ", ".join(f":{c}" for c in columns)
+                # ON CONFLICT DO NOTHING handles duplicate rows from SQLite (which doesn't enforce unique constraints)
+                insert_sql = text(f"INSERT INTO {table_name} ({col_list}) VALUES ({param_list}) ON CONFLICT DO NOTHING")  # noqa: S608  # nosec B608
+
+                # Identify columns that need type conversion (SQLite stores booleans
+                # as int and datetimes as str — asyncpg requires native Python types)
+                from datetime import datetime as dt
+
+                bool_columns = set()
+                datetime_columns = set()
+                not_null_defaults = {}  # col_name -> default value for NOT NULL columns
+                if pg_table is not None:
+                    for col in pg_table.columns:
+                        if col.name not in columns:
+                            continue
+                        col_type = str(col.type)
+                        if col_type == "BOOLEAN":
+                            bool_columns.add(col.name)
+                        elif col_type in ("DATETIME", "TIMESTAMP WITHOUT TIME ZONE", "TIMESTAMP WITH TIME ZONE"):
+                            datetime_columns.add(col.name)
+                        # Track NOT NULL columns with defaults — older backups may have NULL
+                        # for columns added after the backup was created
+                        if not col.nullable:
+                            if col.default is not None:
+                                default = col.default.arg
+                                if callable(default):
+                                    default = default(None)
+                                not_null_defaults[col.name] = default
+                            elif col.server_default is not None:
+                                # server_default=func.now() → use current timestamp
+                                if col.name in datetime_columns:
+                                    not_null_defaults[col.name] = "__now__"
+                                else:
+                                    # Try to extract literal server default
+                                    sd = str(col.server_default.arg) if hasattr(col.server_default, "arg") else None
+                                    if sd is not None:
+                                        not_null_defaults[col.name] = sd
+
+                now = dt.now()
+
+                def _convert_row(
+                    row, cols=columns, bools=bool_columns, dts=datetime_columns, nn_defaults=not_null_defaults, _now=now
+                ):
+                    result = {}
+                    for c in cols:
+                        val = row[c]
+                        if val is None and c in nn_defaults:
+                            val = _now if nn_defaults[c] == "__now__" else nn_defaults[c]
+                        if val is not None:
+                            if c in bools:
+                                val = bool(val)
+                            elif c in dts and isinstance(val, str):
+                                try:
+                                    val = dt.fromisoformat(val)
+                                except ValueError:
+                                    pass
+                        result[c] = val
+                    return result
+
+                batch = [_convert_row(row) for row in rows]
+                await conn.execute(insert_sql, batch)
+                logger.info("Imported %d rows into %s", len(batch), table_name)
+
+            # Reset sequences to max(id) + 1 for each table with an id column
+            for table_name in sorted_tables:
+                try:
+                    async with conn.begin_nested():
+                        result = await conn.execute(text(f"SELECT MAX(id) FROM {table_name}"))  # noqa: S608  # nosec B608
+                        max_id = result.scalar()
+                        if max_id is not None:
+                            seq_name = f"{table_name}_id_seq"
+                            await conn.execute(text(f"SELECT setval('{seq_name}', {max_id})"))  # noqa: S608
+                except Exception:
+                    pass  # Table may not have an id column or sequence
+
+        src.close()
+        logger.info("Cross-database import complete: %d tables imported", len(tables_to_import))
+
+        # Recreate FK constraints from ORM metadata (not from saved definitions).
+        # Use individual transactions so orphaned SQLite data doesn't block valid FKs.
+        from sqlalchemy.schema import AddConstraint
+
+        failed_fks = []
+        for table in metadata.sorted_tables:
+            for fk in table.foreign_key_constraints:
+                try:
+                    async with pg_engine.begin() as fk_conn:
+                        await fk_conn.execute(AddConstraint(fk))
+                except Exception:
+                    failed_fks.append(f"{table.name}.{fk.name}")
+        if failed_fks:
+            logger.warning(
+                "Could not restore %d FK constraints (orphaned data in SQLite): %s",
+                len(failed_fks),
+                ", ".join(failed_fks),
+            )
+
+    finally:
+        await pg_engine.dispose()
 
 
 @router.post("/restore")
@@ -422,8 +677,8 @@ async def restore_backup(
 ):
     """Restore from a complete backup ZIP.
 
-    This is a simplified restore that replaces the database and all data directories
-    from the backup ZIP. Requires a restart after restore.
+    Replaces the database and all data directories from the backup ZIP.
+    Requires a restart after restore.
     """
     import shutil
     import tempfile
@@ -431,10 +686,10 @@ async def restore_backup(
     from fastapi import HTTPException
 
     from backend.app.core.database import close_all_connections, init_db, reinitialize_database
+    from backend.app.core.db_dialect import is_sqlite
     from backend.app.services.virtual_printer import virtual_printer_manager
 
     base_dir = app_settings.base_dir
-    db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -452,7 +707,7 @@ async def restore_backup(
         except zipfile.BadZipFile:
             raise HTTPException(400, "Invalid backup file: not a valid ZIP")
 
-        # 2. Validate backup (must have database)
+        # 2. Validate backup
         backup_db = temp_path / "bambuddy.db"
         if not backup_db.exists():
             raise HTTPException(400, "Invalid backup: missing bambuddy.db")
@@ -465,7 +720,6 @@ async def restore_backup(
                 if virtual_printer_manager.is_enabled:
                     logger.info("Stopping virtual printer for restore...")
                     await virtual_printer_manager.configure(enabled=False)
-                    # Give it time to fully release file handles
                     await asyncio.sleep(1)
             except Exception as e:
                 logger.warning("Failed to stop virtual printer: %s", e)
@@ -476,7 +730,13 @@ async def restore_backup(
 
             # 5. Replace database
             logger.info("Restoring database from backup...")
-            shutil.copy2(backup_db, db_path)
+            if is_sqlite():
+                db_path = Path(app_settings.database_url.replace("sqlite+aiosqlite:///", ""))
+                shutil.copy2(backup_db, db_path)
+            else:
+                # Import SQLite backup into PostgreSQL
+                logger.info("Importing SQLite backup into PostgreSQL...")
+                await _import_sqlite_to_postgres(backup_db, app_settings.database_url)
 
             # 6. Replace data directories
             # For Docker compatibility: clear contents then copy (don't delete mount points)

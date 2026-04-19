@@ -107,7 +107,8 @@ function InlineMappingEditor({
       isManual = true;
     } else {
       const usedTrayIds = new Set<number>(Object.values(printerResult.config.manualMappings));
-      loaded = autoMatchFilament(req, printerResult.loadedFilaments, usedTrayIds) as LoadedFilament | undefined;
+      const cachedSettings = queryClient.getQueryData<{ prefer_lowest_filament?: boolean }>(['settings']);
+      loaded = autoMatchFilament(req, printerResult.loadedFilaments, usedTrayIds, cachedSettings?.prefer_lowest_filament) as LoadedFilament | undefined;
     }
 
     // Determine status

@@ -518,9 +518,11 @@ create_spoolbuddy_user() {
 spoolbuddy ALL=(root) NOPASSWD: /usr/bin/systemctl restart spoolbuddy.service
 spoolbuddy ALL=(root) NOPASSWD: /usr/bin/systemctl restart getty@tty1.service
 spoolbuddy ALL=(root) NOPASSWD: /usr/bin/find /home -maxdepth 5 *
+spoolbuddy ALL=(root) NOPASSWD: /sbin/reboot
+spoolbuddy ALL=(root) NOPASSWD: /sbin/shutdown -h now
 SUDOERS
     chmod 440 /etc/sudoers.d/spoolbuddy
-    success "Sudoers entries created for service and kiosk restart"
+    success "Sudoers entries created for service, kiosk restart, reboot and shutdown"
 }
 
 download_spoolbuddy() {
@@ -781,6 +783,43 @@ EOF
     success "Bambuddy service created and enabled"
 }
 
+bootstrap_spoolbuddy_kiosk_key() {
+    # Provision an API key for the local SpoolBuddy kiosk and write it into
+    # spoolbuddy/.env. Runs against the Bambuddy DB directly (via the CLI),
+    # so the bambuddy service does not need to be running yet.
+    info "Provisioning SpoolBuddy kiosk API key..."
+
+    local env_file="$INSTALL_PATH/spoolbuddy/.env"
+    if [[ ! -f "$env_file" ]]; then
+        warn "SpoolBuddy env file not found at $env_file — skipping kiosk key bootstrap"
+        return
+    fi
+
+    # CWD must be $INSTALL_PATH so `python -m backend.app.cli` finds the backend
+    # package on sys.path (matches the systemd unit's WorkingDirectory).
+    local kiosk_key
+    if ! kiosk_key="$(cd "$INSTALL_PATH" && sudo -u "$BAMBUDDY_SERVICE_USER" \
+            env DATA_DIR="$INSTALL_PATH/data" LOG_DIR="$INSTALL_PATH/logs" \
+            "$INSTALL_PATH/venv/bin/python" -m backend.app.cli kiosk-bootstrap --force)"; then
+        error "Failed to bootstrap SpoolBuddy kiosk API key"
+    fi
+
+    if [[ -z "$kiosk_key" || "$kiosk_key" != bb_* ]]; then
+        error "CLI returned an invalid API key (got: ${kiosk_key:0:8}...)"
+    fi
+
+    if ! grep -q '^SPOOLBUDDY_API_KEY=' "$env_file"; then
+        error "Sentinel 'SPOOLBUDDY_API_KEY=' line missing in $env_file"
+    fi
+
+    # Escape for sed replacement (the key is base64url-safe, no slashes, but be defensive)
+    local escaped_key
+    escaped_key=$(printf '%s\n' "$kiosk_key" | sed -e 's/[\/&]/\\&/g')
+    sed -i "s/^SPOOLBUDDY_API_KEY=.*/SPOOLBUDDY_API_KEY=${escaped_key}/" "$env_file"
+
+    success "SpoolBuddy kiosk API key provisioned"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # System Strip-Down (dedicated appliance — remove unnecessary services/packages)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -805,12 +844,37 @@ strip_services() {
         man-db.timer
         e2scrub_all.timer
         e2scrub_reap.service
+        # Audio stack (no speakers on a spool reader)
+        pipewire.service
+        pipewire.socket
+        pipewire-pulse.service
+        pipewire-pulse.socket
+        wireplumber.service
+        # Printing
+        cups.service
+        cups.socket
+        cups-browsed.service
+        # Desktop services
+        accounts-daemon.service
+        upower.service
+        polkit.service
+        # Flatpak portals (not using Flatpak)
+        xdg-desktop-portal.service
+        xdg-desktop-portal-gtk.service
+        xdg-document-portal.service
+        xdg-permission-store.service
+        # NFS/RPC (unnecessary + security surface)
+        rpcbind.service
+        rpcbind.socket
+        # Bluetooth media proxy
+        mpris-proxy.service
     )
 
     local disabled=0
     for svc in "${services[@]}"; do
         if systemctl is-enabled "$svc" &>/dev/null; then
             systemctl disable "$svc" 2>/dev/null || true
+            systemctl mask "$svc" 2>/dev/null || true
             (( ++disabled ))
         fi
     done
@@ -819,6 +883,33 @@ strip_services() {
         success "Disabled $disabled unnecessary services"
     else
         success "No unnecessary services to disable"
+    fi
+
+    # Mask user-level services globally via /etc/systemd/user/ overrides.
+    # The su-based approach doesn't reliably reach the user's systemd instance
+    # when run from sudo, so we create global masks that apply before login.
+    local user_services=(
+        pipewire.service
+        pipewire.socket
+        pipewire-pulse.service
+        pipewire-pulse.socket
+        wireplumber.service
+        xdg-desktop-portal.service
+        xdg-desktop-portal-gtk.service
+        xdg-document-portal.service
+        xdg-permission-store.service
+        mpris-proxy.service
+    )
+    mkdir -p /etc/systemd/user
+    local user_masked=0
+    for svc in "${user_services[@]}"; do
+        if [[ ! -L "/etc/systemd/user/$svc" ]] || [[ "$(readlink /etc/systemd/user/$svc)" != "/dev/null" ]]; then
+            ln -sf /dev/null "/etc/systemd/user/$svc"
+            (( ++user_masked ))
+        fi
+    done
+    if (( user_masked > 0 )); then
+        success "Masked $user_masked unnecessary user services globally"
     fi
 }
 
@@ -835,6 +926,14 @@ strip_packages() {
         avahi-daemon
         modemmanager
         udisks2
+        pipewire
+        pipewire-pulse
+        wireplumber
+        cups
+        cups-browsed
+        cups-common
+        cups-client
+        rpcbind
     )
 
     local to_remove=()
@@ -885,7 +984,7 @@ setup_kiosk() {
         dpkg-divert --local --rename --add /usr/sbin/update-initramfs >/dev/null 2>&1 || true
         ln -sf /bin/true /usr/sbin/update-initramfs
     fi
-    run_with_progress "Installing kiosk packages" apt-get install -y labwc chromium plymouth wlr-randr
+    run_with_progress "Installing kiosk packages" apt-get install -y labwc chromium plymouth wlr-randr swayidle wlopm jq curl
     # Restore real update-initramfs
     if dpkg-divert --list /usr/sbin/update-initramfs 2>/dev/null | grep -q local; then
         rm -f /usr/sbin/update-initramfs
@@ -942,6 +1041,9 @@ setup_kiosk() {
 
         # Remove serial console (Plymouth needs tty-only console)
         sed -i 's/console=serial0,[0-9]* //' "$cmdline"
+
+        # Disable console blanking (kernel default is 600s, can blank during boot transition)
+        grep -q "consoleblank=" "$cmdline" || sed -i 's/$/ consoleblank=0/' "$cmdline"
 
         # Add splash quiet loglevel=3 logo.nologo if missing
         grep -q "splash" "$cmdline" || sed -i 's/$/ splash quiet loglevel=3 logo.nologo/' "$cmdline"
@@ -1019,6 +1121,11 @@ EOF
 <?xml version="1.0"?>
 <labwc_config>
 
+  <!-- Disable screen blanking — kiosk must stay on -->
+  <core>
+    <screenBlankTimeout>0</screenBlankTimeout>
+  </core>
+
   <theme>
     <name></name>
     <cornerRadius>0</cornerRadius>
@@ -1046,6 +1153,18 @@ EOF
 
 </labwc_config>
 EOF
+
+        # ── Override Debian/RPi Chromium defaults for kiosk performance ──────
+        cat > /etc/chromium.d/spoolbuddy-kiosk << 'CHROMIUM_EOF'
+# SpoolBuddy kiosk: add kiosk-specific flags on top of Pi defaults.
+# Preserves Pi GPU settings (gpu-rasterization, ANGLE/GLES) for stability.
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-smooth-scrolling"
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-extensions"
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-background-timer-throttling"
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-renderer-backgrounding"
+CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-crash-reporter"
+CHROMIUM_EOF
+        success "Chromium kiosk performance flags installed"
 
         # ── kiosk launcher (dynamic URL from spoolbuddy/.env) ─────────────────
         local kiosk_launcher="/usr/local/bin/spoolbuddy-kiosk-launch"
@@ -1079,11 +1198,24 @@ else
     kiosk_url="\$FALLBACK_URL"
 fi
 
+# Wait for the Bambuddy backend to be reachable before launching Chromium.
+# Without this the browser opens before uvicorn has bound to the port on a
+# cold boot and the user sees an ERR_CONNECTION_REFUSED splash until they
+# manually reload. Probe /health (no auth, no body) with a short timeout.
+probe_url="\${backend_url:-http://localhost}/health"
+for _i in \$(seq 1 60); do
+    if curl -sf --max-time 2 "\$probe_url" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
 exec chromium --kiosk --no-first-run --disable-infobars \
     --disable-session-crashed-bubble --disable-features=TranslateUI \
     --noerrdialogs --disable-component-update \
     --overscroll-history-navigation=0 \
     --ozone-platform=wayland \
+    --disable-crash-reporter --disable-breakpad \
     "\$kiosk_url"
 EOF
 
@@ -1099,6 +1231,12 @@ EOF
         cat > "$labwc_dir/autostart" << EOF
 # Force 1024x600 (panel doesn't advertise this natively)
 wlr-randr --output HDMI-A-1 --custom-mode 1024x600@60 &
+
+# Idle watchdog: powers off HDMI via wlopm after the configured inactivity
+# timeout (SpoolBuddy Settings → Display → Screen blank timeout). Reads the
+# current value from the backend on startup; UI changes take effect on the
+# next reboot / kiosk restart.
+$INSTALL_PATH/spoolbuddy/install/spoolbuddy-idle.sh &
 
 # Launch Chromium via helper that resolves URL from spoolbuddy/.env
 $kiosk_launcher &
@@ -1415,6 +1553,7 @@ main() {
         create_bambuddy_directories
         create_bambuddy_env
         create_bambuddy_service
+        bootstrap_spoolbuddy_kiosk_key
         echo ""
     fi
 
@@ -1443,10 +1582,7 @@ main() {
         echo -e "  ${BOLD}Next steps:${NC}"
         echo -e "    1. Reboot (required for kiosk, Plymouth splash, and hardware changes)"
         echo -e "    2. The touchscreen kiosk will start automatically after reboot"
-        echo -e "    3. On another device, open ${CYAN}http://$ip_addr:$BAMBUDDY_PORT${NC}"
-        echo -e "    4. Go to Settings -> API Keys and create an API key"
-        echo -e "    5. Update the API key in: ${CYAN}$INSTALL_PATH/spoolbuddy/.env${NC}"
-        echo -e "    6. Restart SpoolBuddy: ${CYAN}sudo systemctl restart spoolbuddy${NC}"
+        echo -e "    3. On another device, open ${CYAN}http://$ip_addr:$BAMBUDDY_PORT${NC} to complete first-run admin setup"
     fi
 
     echo ""

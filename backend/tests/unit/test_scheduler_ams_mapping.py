@@ -415,6 +415,96 @@ class TestMatchFilamentsToSlots:
         assert result == [-1, 3]
 
 
+class TestPreferLowestFilament:
+    """Test prefer_lowest_filament sorting in _match_filaments_to_slots."""
+
+    @pytest.fixture
+    def scheduler(self):
+        return PrintScheduler()
+
+    def test_prefer_lowest_picks_lower_remain(self, scheduler):
+        """When enabled, should pick the spool with lower remaining filament."""
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 0, "remain": 80},
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 1, "remain": 30},
+        ]
+
+        result = scheduler._match_filaments_to_slots(required, loaded, prefer_lowest=True)
+        assert result == [1]  # Should pick tray 1 (30% remaining)
+
+    def test_prefer_lowest_disabled_picks_first(self, scheduler):
+        """When disabled, should pick the first matching spool (default behavior)."""
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 0, "remain": 80},
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 1, "remain": 30},
+        ]
+
+        result = scheduler._match_filaments_to_slots(required, loaded, prefer_lowest=False)
+        assert result == [0]  # Should pick tray 0 (first match)
+
+    def test_prefer_lowest_unknown_remain_sorted_last(self, scheduler):
+        """Spools with remain=-1 (unknown) should be sorted to end."""
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 0, "remain": -1},
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 1, "remain": 50},
+        ]
+
+        result = scheduler._match_filaments_to_slots(required, loaded, prefer_lowest=True)
+        assert result == [1]  # Should pick tray 1 (known 50%) over unknown
+
+    def test_prefer_lowest_missing_remain_sorted_last(self, scheduler):
+        """Spools without remain field should be sorted to end."""
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 0},  # No remain field
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 1, "remain": 50},
+        ]
+
+        result = scheduler._match_filaments_to_slots(required, loaded, prefer_lowest=True)
+        assert result == [1]  # Should pick tray 1 (known 50%) over missing
+
+    def test_prefer_lowest_multiple_slots(self, scheduler):
+        """Should pick lowest remain for each slot independently."""
+        required = [
+            {"slot_id": 1, "type": "PLA", "color": "#FF0000"},
+            {"slot_id": 2, "type": "PLA", "color": "#FF0000"},
+        ]
+        loaded = [
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 0, "remain": 80},
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 1, "remain": 30},
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 2, "remain": 60},
+        ]
+
+        result = scheduler._match_filaments_to_slots(required, loaded, prefer_lowest=True)
+        # Slot 1 gets tray 1 (30%), slot 2 gets tray 2 (60%) — tray 0 (80%) unused
+        assert result == [1, 2]
+
+    def test_prefer_lowest_with_tray_info_idx(self, scheduler):
+        """Should sort within tray_info_idx subset too."""
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FFFFFF", "tray_info_idx": "GFA00"}]
+        loaded = [
+            {"type": "PLA", "color": "#FFFFFF", "global_tray_id": 0, "tray_info_idx": "GFA00", "remain": 80},
+            {"type": "PLA", "color": "#FFFFFF", "global_tray_id": 1, "tray_info_idx": "GFA00", "remain": 20},
+        ]
+
+        result = scheduler._match_filaments_to_slots(required, loaded, prefer_lowest=True)
+        assert result == [1]  # Should pick tray 1 (20%) within idx subset
+
+    def test_prefer_lowest_external_spool(self, scheduler):
+        """External spool with low remain should be preferred over AMS spool."""
+        required = [{"slot_id": 1, "type": "PLA", "color": "#FF0000"}]
+        loaded = [
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 0, "remain": 80, "is_external": False},
+            {"type": "PLA", "color": "#FF0000", "global_tray_id": 254, "remain": 10, "is_external": True},
+        ]
+
+        result = scheduler._match_filaments_to_slots(required, loaded, prefer_lowest=True)
+        assert result == [254]  # Should pick external spool (10%) over AMS (80%)
+
+
 class TestBuildLoadedFilamentsTrayInfoIdx:
     """Test tray_info_idx extraction in _build_loaded_filaments."""
 
@@ -588,6 +678,91 @@ class TestExtractNozzleMappingFrom3mf:
         )
         result = extract_nozzle_mapping_from_3mf(zf)
         assert result == {1: 1, 2: 0}
+        zf.close()
+
+    def test_single_active_extruder_maps_all_slots(self):
+        """When only one extruder has nozzles installed, all filaments map to it.
+
+        H2C scenario: left extruder has no nozzles (Standard#0|High Flow#0),
+        right extruder has one Standard nozzle (Standard#1). Print uses only
+        the right extruder, so all filaments should map to physical extruder 0.
+        """
+        slice_info = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+          <plate>
+            <filament id="1" type="PLA" color="#FF0000" used_g="5.0" group_id="0"/>
+            <filament id="2" type="PLA" color="#00FF00" used_g="3.0" group_id="0"/>
+          </plate>
+        </config>"""
+        zf = _make_3mf_zip(
+            {
+                "physical_extruder_map": ["1", "0"],
+                "extruder_nozzle_stats": ["Standard#0|High Flow#0", "Standard#1"],
+            },
+            slice_info_xml=slice_info,
+        )
+        result = extract_nozzle_mapping_from_3mf(zf)
+        # Only extruder index 1 is active → physical_extruder_map[1] = 0 (RIGHT)
+        assert result == {1: 0, 2: 0}
+        zf.close()
+
+    def test_two_active_extruders_falls_through(self):
+        """When both extruders have nozzles, the single-active shortcut is skipped.
+
+        Should fall through to the normal group_id-based mapping.
+        """
+        slice_info = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+          <plate>
+            <filament id="1" type="PLA" color="#FF0000" used_g="5.0" group_id="0"/>
+            <filament id="2" type="PLA" color="#00FF00" used_g="3.0" group_id="1"/>
+          </plate>
+        </config>"""
+        zf = _make_3mf_zip(
+            {
+                "physical_extruder_map": ["1", "0"],
+                "extruder_nozzle_stats": ["Standard#1", "High Flow#1"],
+            },
+            slice_info_xml=slice_info,
+        )
+        result = extract_nozzle_mapping_from_3mf(zf)
+        # Both active → normal group_id mapping: group 0 → phys 1, group 1 → phys 0
+        assert result == {1: 1, 2: 0}
+        zf.close()
+
+    def test_missing_extruder_nozzle_stats_falls_through(self):
+        """When extruder_nozzle_stats is absent, the single-active shortcut is skipped.
+
+        Should fall through to the normal group_id-based mapping.
+        """
+        slice_info = """<?xml version="1.0" encoding="UTF-8"?>
+        <config>
+          <plate>
+            <filament id="1" type="PLA" color="#FF0000" used_g="5.0" group_id="0"/>
+            <filament id="2" type="PLA" color="#00FF00" used_g="3.0" group_id="1"/>
+          </plate>
+        </config>"""
+        zf = _make_3mf_zip(
+            {
+                "physical_extruder_map": ["1", "0"],
+            },
+            slice_info_xml=slice_info,
+        )
+        result = extract_nozzle_mapping_from_3mf(zf)
+        # No extruder_nozzle_stats → normal group_id mapping
+        assert result == {1: 1, 2: 0}
+        zf.close()
+
+    def test_single_active_extruder_no_slice_info_returns_none(self):
+        """Single active extruder but no slice_info should return None."""
+        zf = _make_3mf_zip(
+            {
+                "physical_extruder_map": ["1", "0"],
+                "extruder_nozzle_stats": ["Standard#0", "Standard#1"],
+            },
+        )
+        result = extract_nozzle_mapping_from_3mf(zf)
+        assert result is None
         zf.close()
 
 

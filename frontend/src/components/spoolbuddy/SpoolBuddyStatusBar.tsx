@@ -31,7 +31,7 @@ export function SpoolBuddyStatusBar({ alert }: SpoolBuddyStatusBarProps) {
   return (
     <div className={`h-9 bg-bambu-dark-secondary border-t-2 ${borderColor} flex items-center px-3 gap-3 shrink-0`}>
       {/* Status LED */}
-      <div className={`w-3.5 h-3.5 rounded-full ${statusColor} animate-pulse`} />
+      <div className={`w-3.5 h-3.5 rounded-full ${statusColor}`} />
 
       {/* Status message */}
       <div className="flex-1 text-sm text-white/50 truncate">

@@ -8,6 +8,18 @@ body:
       value: |
         Thanks for taking the time to report a bug! Please fill out the form below.
 
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of the project is affected?
+      options:
+        - Bambuddy
+        - SpoolBuddy
+        - Both
+    validations:
+      required: true
+
   - type: textarea
     id: description
     attributes:
@@ -59,7 +71,7 @@ body:
         - Multiple printers
         - Not printer-related
     validations:
-      required: true
+      required: false
 
   - type: input
     id: version
@@ -71,13 +83,18 @@ body:
       required: true
 
   - type: input
+    id: spoolbuddy_version
+    attributes:
+      label: SpoolBuddy Version
+      description: If SpoolBuddy-related, which version is running? (Check SpoolBuddy Settings → Updates)
+      placeholder: e.g., 0.1.0
+
+  - type: input
     id: firmware
     attributes:
       label: Printer Firmware Version
-      description: Which firmware version is your printer running? (Check printer screen or Bambu Handy app)
+      description: Which firmware version is your printer running? (Check printer screen or Bambu Handy app). Leave blank if not printer-related.
       placeholder: e.g., 01.08.00.00
-    validations:
-      required: true
 
   - type: dropdown
     id: installation

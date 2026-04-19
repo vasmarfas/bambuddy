@@ -152,6 +152,10 @@ class SystemConfigRequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=255)
 
 
+class SystemCommandRequest(BaseModel):
+    command: str = Field(..., description="System command: reboot, shutdown, restart_daemon, restart_browser")
+
+
 class SystemCommandResultRequest(BaseModel):
     command: str
     success: bool

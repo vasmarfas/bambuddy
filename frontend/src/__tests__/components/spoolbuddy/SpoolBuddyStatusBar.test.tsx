@@ -25,7 +25,7 @@ describe('SpoolBuddyStatusBar', () => {
 
   it('uses green status LED when no alert', () => {
     const { container } = render(<SpoolBuddyStatusBar />);
-    const led = container.querySelector('.rounded-full.animate-pulse');
+    const led = container.querySelector('.rounded-full');
     expect(led!.className).toContain('bg-bambu-green');
   });
 
@@ -34,7 +34,7 @@ describe('SpoolBuddyStatusBar', () => {
       <SpoolBuddyStatusBar alert={{ type: 'warning', message: 'Low filament' }} />
     );
     expect(screen.getByText('Low filament')).toBeDefined();
-    const led = container.querySelector('.rounded-full.animate-pulse');
+    const led = container.querySelector('.rounded-full');
     expect(led!.className).toContain('bg-amber-500');
     // Border should also be amber
     const bar = container.firstElementChild as HTMLElement;
@@ -46,7 +46,7 @@ describe('SpoolBuddyStatusBar', () => {
       <SpoolBuddyStatusBar alert={{ type: 'error', message: 'Connection lost' }} />
     );
     expect(screen.getByText('Connection lost')).toBeDefined();
-    const led = container.querySelector('.rounded-full.animate-pulse');
+    const led = container.querySelector('.rounded-full');
     expect(led!.className).toContain('bg-red-500');
     const bar = container.firstElementChild as HTMLElement;
     expect(bar.className).toContain('border-red-500');
@@ -57,7 +57,7 @@ describe('SpoolBuddyStatusBar', () => {
       <SpoolBuddyStatusBar alert={{ type: 'info', message: 'Update available' }} />
     );
     expect(screen.getByText('Update available')).toBeDefined();
-    const led = container.querySelector('.rounded-full.animate-pulse');
+    const led = container.querySelector('.rounded-full');
     expect(led!.className).toContain('bg-bambu-green');
   });
 });

@@ -2,7 +2,7 @@
  * Tests for the QueuePage component.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { render } from '../utils';
@@ -110,6 +110,13 @@ const mockPrinters = [
 
 describe('QueuePage', () => {
   beforeEach(() => {
+    // Mock localStorage.getItem to return expected defaults for queue page
+    vi.mocked(localStorage.getItem).mockImplementation((key: string) => {
+      if (key === 'queue.historyCollapsed') return 'false'; // expanded
+      if (key === 'queue.viewMode') return 'list';
+      return null;
+    });
+
     // Setup MSW handlers for this test
     server.use(
       http.get('/api/v1/queue/', () => {
@@ -406,6 +413,33 @@ describe('QueuePage', () => {
       await waitFor(() => {
         expect(screen.getByText('Auto power off')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('gcode injection badge', () => {
+    it('shows G-code badge when gcode_injection is true', async () => {
+      const itemsWithGcode = mockQueueItems.map((item, i) =>
+        i === 0 ? { ...item, gcode_injection: true } : item
+      );
+      server.use(
+        http.get('/api/v1/queue/', () => HttpResponse.json(itemsWithGcode)),
+      );
+
+      render(<QueuePage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('G-code')).toBeInTheDocument();
+      });
+    });
+
+    it('does not show G-code badge when gcode_injection is false', async () => {
+      render(<QueuePage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Print 1')).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText('G-code')).not.toBeInTheDocument();
     });
   });
 });

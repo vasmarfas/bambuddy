@@ -312,7 +312,7 @@ export function ColorCatalogSettings() {
   };
 
   return (
-    <Card>
+    <Card id="card-color-catalog">
       <CardHeader>
         <div className="flex items-center gap-2 mb-3">
           <Palette className="w-5 h-5 text-bambu-gray" />

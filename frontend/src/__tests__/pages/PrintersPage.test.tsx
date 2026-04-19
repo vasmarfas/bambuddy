@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, fireEvent } from '@testing-library/react';
 import { render } from '../utils';
 import { PrintersPage } from '../../pages/PrintersPage';
 import { http, HttpResponse } from 'msw';
@@ -236,6 +236,45 @@ describe('PrintersPage', () => {
       expect(dashes.length).toBeGreaterThanOrEqual(3); // 3 empty rack positions (IDs 19,20,21)
     });
 
+    it('keeps empty slot anchored to physical position when its nozzle is mounted (#943)', async () => {
+      // H2C with rack slot 16 picked up into the hotend — firmware omits ID 16
+      // entirely from nozzle.info. Each rack diameter is unique so we can assert
+      // the ordering by tooltip lookup.
+      const h2cSlot16Mounted = {
+        ...mockPrinterStatus,
+        nozzle_rack: [
+          { id: 0, nozzle_type: 'HS', nozzle_diameter: '0.4', wear: 5, stat: 1, max_temp: 300, serial_number: 'SN-L', filament_color: '', filament_id: '', filament_type: '' },
+          { id: 1, nozzle_type: 'HS', nozzle_diameter: '0.4', wear: 3, stat: 0, max_temp: 300, serial_number: 'SN-R', filament_color: '', filament_id: '', filament_type: '' },
+          // ID 16 missing — currently in hotend
+          { id: 17, nozzle_type: 'HS', nozzle_diameter: '0.2', wear: 0, stat: 0, max_temp: 300, serial_number: 'SN-17', filament_color: '', filament_id: '', filament_type: '' },
+          { id: 18, nozzle_type: 'HS', nozzle_diameter: '0.6', wear: 0, stat: 0, max_temp: 300, serial_number: 'SN-18', filament_color: '', filament_id: '', filament_type: '' },
+          { id: 19, nozzle_type: 'HS', nozzle_diameter: '0.8', wear: 0, stat: 0, max_temp: 300, serial_number: 'SN-19', filament_color: '', filament_id: '', filament_type: '' },
+          { id: 20, nozzle_type: 'HH01', nozzle_diameter: '1.0', wear: 0, stat: 0, max_temp: 300, serial_number: 'SN-20', filament_color: '', filament_id: '', filament_type: '' },
+          { id: 21, nozzle_type: 'HH01', nozzle_diameter: '1.2', wear: 0, stat: 0, max_temp: 300, serial_number: 'SN-21', filament_color: '', filament_id: '', filament_type: '' },
+        ],
+      };
+
+      server.use(
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json(h2cSlot16Mounted);
+        })
+      );
+
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText('Nozzle Rack').length).toBeGreaterThan(0);
+      });
+
+      // Slot 1 (leftmost, ID 16) should be the empty dash; slots 2..6 should
+      // hold the 5 remaining nozzles in order 17, 18, 19, 20, 21.
+      const rackLabel = screen.getAllByText('Nozzle Rack')[0];
+      const rackCard = rackLabel.parentElement!;
+      const slotRow = rackCard.querySelectorAll('div.flex')[0];
+      const slotTexts = Array.from(slotRow.querySelectorAll('span')).map(s => s.textContent);
+      expect(slotTexts).toEqual(['—', '0.2', '0.6', '0.8', '1.0', '1.2']);
+    });
+
     it('hides nozzle rack when only L/R nozzles present (H2D)', async () => {
       const h2dStatus = {
         ...mockPrinterStatus,
@@ -383,6 +422,301 @@ describe('PrintersPage', () => {
 
       // Badge should not appear when API returns no latest_version
       expect(screen.queryByText('01.01.03.00')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('bulk selection', () => {
+    it('shows select button in toolbar', async () => {
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+
+      // The Select button should be in the toolbar (title attribute)
+      const selectButton = screen.getByTitle('Select');
+      expect(selectButton).toBeInTheDocument();
+    });
+
+    it('shows selection toolbar after clicking select button', async () => {
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+
+      // Click the Select button to enter selection mode
+      fireEvent.click(screen.getByTitle('Select'));
+
+      // The floating toolbar should appear with Select All
+      await waitFor(() => {
+        expect(screen.getByText('Select All')).toBeInTheDocument();
+      });
+    });
+
+    it('shows selection count when printers are selected', async () => {
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+
+      // Enter selection mode
+      fireEvent.click(screen.getByTitle('Select'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Select All')).toBeInTheDocument();
+      });
+
+      // Click Select All to select both printers
+      fireEvent.click(screen.getByText('Select All'));
+
+      // Should show "2 selected"
+      await waitFor(() => {
+        expect(screen.getByText('2 selected')).toBeInTheDocument();
+      });
+    });
+
+    it('shows select by state dropdown', async () => {
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+
+      // Enter selection mode
+      fireEvent.click(screen.getByTitle('Select'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Select by State')).toBeInTheDocument();
+      });
+    });
+
+    it('exits selection mode on close button', async () => {
+      render(<PrintersPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+
+      // Enter selection mode
+      fireEvent.click(screen.getByTitle('Select'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Select All')).toBeInTheDocument();
+      });
+
+      // Click the Select button again to exit (it toggles)
+      fireEvent.click(screen.getByTitle('Select'));
+
+      // Floating toolbar should disappear
+      await waitFor(() => {
+        expect(screen.queryByText('Select All')).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('search and filter', () => {
+    beforeEach(() => {
+      server.use(
+        http.get('/api/v1/printers/', () => HttpResponse.json(mockPrinters)),
+        http.get('/api/v1/printers/:id/status', () => HttpResponse.json(mockPrinterStatus)),
+        http.get('/api/v1/queue/', () => HttpResponse.json([]))
+      );
+    });
+
+    it('filters by name (case-insensitive)', async () => {
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByPlaceholderText('Search printers...'), { target: { value: 'x1 carbon' } });
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+        expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument();
+      });
+    });
+
+    it('trims leading and trailing whitespace from search', async () => {
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+
+      // " X1 Carbon " with surrounding spaces must still match
+      fireEvent.change(screen.getByPlaceholderText('Search printers...'), { target: { value: '  X1 Carbon  ' } });
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+        expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument();
+      });
+    });
+
+    it('filters by model', async () => {
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByPlaceholderText('Search printers...'), { target: { value: 'P1S' } });
+
+      await waitFor(() => {
+        expect(screen.queryByText('X1 Carbon')).not.toBeInTheDocument();
+        expect(screen.getByText('P1S Backup')).toBeInTheDocument();
+      });
+    });
+
+    it('filters by serial number', async () => {
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByPlaceholderText('Search printers...'), { target: { value: '00M09A' } });
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+        expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument();
+      });
+    });
+
+    it('shows empty state when no printers match search', async () => {
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByPlaceholderText('Search printers...'), { target: { value: 'ZZZ_NO_MATCH' } });
+
+      await waitFor(() => {
+        expect(screen.getByText('No printers match your search or filters')).toBeInTheDocument();
+      });
+    });
+
+    it('clear button resets search and shows all printers', async () => {
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+
+      fireEvent.change(screen.getByPlaceholderText('Search printers...'), { target: { value: 'X1 Carbon' } });
+
+      await waitFor(() => expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument());
+
+      // Click the accessible clear button
+      fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+        expect(screen.getByText('P1S Backup')).toBeInTheDocument();
+      });
+    });
+
+    it('filters by status (offline) via dropdown', async () => {
+      // Override: printer 1 online, printer 2 offline
+      server.use(
+        http.get('/api/v1/printers/:id/status', ({ params }) => {
+          if (Number(params.id) === 2) {
+            return HttpResponse.json({ ...mockPrinterStatus, connected: false });
+          }
+          return HttpResponse.json(mockPrinterStatus);
+        })
+      );
+
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+
+      // Select "Offline" from the status filter dropdown
+      const statusSelect = screen.getByDisplayValue('All statuses');
+      fireEvent.change(statusSelect, { target: { value: 'offline' } });
+
+      await waitFor(() => {
+        expect(screen.queryByText('X1 Carbon')).not.toBeInTheDocument();
+        expect(screen.getByText('P1S Backup')).toBeInTheDocument();
+      });
+    });
+
+    it('shows empty state when status filter matches nothing', async () => {
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+
+      // Both printers are IDLE; filtering by "printing" should yield no results
+      const statusSelect = screen.getByDisplayValue('All statuses');
+      fireEvent.change(statusSelect, { target: { value: 'printing' } });
+
+      await waitFor(() => {
+        expect(screen.getByText('No printers match your search or filters')).toBeInTheDocument();
+      });
+    });
+
+    it('combines search and status filter', async () => {
+      // Printer 1 = RUNNING (printing), printer 2 = IDLE
+      server.use(
+        http.get('/api/v1/printers/:id/status', ({ params }) => {
+          if (Number(params.id) === 1) {
+            return HttpResponse.json({ ...mockPrinterStatus, state: 'RUNNING' });
+          }
+          return HttpResponse.json(mockPrinterStatus);
+        })
+      );
+
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+
+      // Filter to only "printing" printers
+      fireEvent.change(screen.getByDisplayValue('All statuses'), { target: { value: 'printing' } });
+
+      // Then also search for a term that only matches printer 1
+      fireEvent.change(screen.getByPlaceholderText('Search printers...'), { target: { value: 'X1' } });
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+        expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument();
+      });
+    });
+
+    it('filters by location via dropdown', async () => {
+      // Override: give printer 2 its own location so the dropdown has two options
+      // and we can verify the filter picks the right one. Printer 1 stays at 'Workshop'.
+      server.use(
+        http.get('/api/v1/printers/', () =>
+          HttpResponse.json([
+            mockPrinters[0],
+            { ...mockPrinters[1], location: 'Office' },
+          ])
+        )
+      );
+
+      render(<PrintersPage />);
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+        expect(screen.getByText('P1S Backup')).toBeInTheDocument();
+      });
+
+      // Select "Workshop" from the location filter dropdown
+      fireEvent.change(screen.getByDisplayValue('All locations'), { target: { value: 'Workshop' } });
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+        expect(screen.queryByText('P1S Backup')).not.toBeInTheDocument();
+      });
+
+      // Switch to "Office" — the other printer should now be the only one visible
+      fireEvent.change(screen.getByDisplayValue('Workshop'), { target: { value: 'Office' } });
+
+      await waitFor(() => {
+        expect(screen.queryByText('X1 Carbon')).not.toBeInTheDocument();
+        expect(screen.getByText('P1S Backup')).toBeInTheDocument();
+      });
+    });
+
+    it('hides location filter when no printers have a location', async () => {
+      // Both printers have null location — dropdown should not render at all
+      server.use(
+        http.get('/api/v1/printers/', () =>
+          HttpResponse.json([
+            { ...mockPrinters[0], location: null },
+            { ...mockPrinters[1], location: null },
+          ])
+        )
+      );
+
+      render(<PrintersPage />);
+      await waitFor(() => expect(screen.getByText('X1 Carbon')).toBeInTheDocument());
+
+      // Status filter is still there, but the location filter should be absent.
+      expect(screen.getByDisplayValue('All statuses')).toBeInTheDocument();
+      expect(screen.queryByDisplayValue('All locations')).not.toBeInTheDocument();
     });
   });
 });

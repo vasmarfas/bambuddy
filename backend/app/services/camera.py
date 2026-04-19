@@ -1,12 +1,13 @@
 """Camera capture service for Bambu Lab printers.
 
 Supports two camera protocols:
-- RTSP: Used by X1, X1C, X1E, H2C, H2D, H2DPRO, H2S, P2S (port 322)
+- RTSP: Used by X1, X1C, X1E, X2D, H2C, H2D, H2DPRO, H2S, P2S (port 322)
 - Chamber Image: Used by A1, A1MINI, P1P, P1S (port 6000, custom binary protocol)
 """
 
 import asyncio
 import logging
+import os
 import shutil
 import ssl
 import struct
@@ -22,6 +23,10 @@ JPEG_END = b"\xff\xd9"
 
 # Cache the ffmpeg path after first lookup
 _ffmpeg_path: str | None = None
+
+# Track PIDs of ffmpeg processes spawned for one-shot frame capture (snapshot).
+# The cleanup task in routes/camera.py checks this set to avoid killing active captures.
+_active_capture_pids: set[int] = set()
 
 
 def get_ffmpeg_path() -> str | None:
@@ -64,13 +69,14 @@ def get_ffmpeg_path() -> str | None:
 def supports_rtsp(model: str | None) -> bool:
     """Check if printer model supports RTSP camera streaming.
 
-    RTSP supported: X1, X1C, X1E, H2C, H2D, H2DPRO, H2S, P2S
+    RTSP supported: X1, X1C, X1E, X2D, H2C, H2D, H2DPRO, H2S, P2S
     Chamber image only: A1, A1MINI, P1P, P1S
 
     Note: Model can be either display name (e.g., "P2S") or internal code (e.g., "N7").
     Internal codes from MQTT/SSDP:
       - BL-P001: X1/X1C
       - C13: X1E
+      - N6: X2D
       - O1D: H2D
       - O1C, O1C2: H2C
       - O1S: H2S
@@ -79,11 +85,11 @@ def supports_rtsp(model: str | None) -> bool:
     """
     if model:
         model_upper = model.upper()
-        # Display names: X1, X1C, X1E, H2C, H2D, H2DPRO, H2S, P2S
-        if model_upper.startswith(("X1", "H2", "P2")):
+        # Display names: X1, X1C, X1E, X2D, H2C, H2D, H2DPRO, H2S, P2S
+        if model_upper.startswith(("X1", "X2", "H2", "P2")):
             return True
         # Internal codes for RTSP models
-        if model_upper in ("BL-P001", "C13", "O1D", "O1C", "O1C2", "O1S", "O1E", "O2D", "N7"):
+        if model_upper in ("BL-P001", "C13", "N6", "O1D", "O1C", "O1C2", "O1S", "O1E", "O2D", "N7"):
             return True
     # A1/P1 and unknown models use chamber image protocol
     return False
@@ -92,7 +98,7 @@ def supports_rtsp(model: str | None) -> bool:
 def get_camera_port(model: str | None) -> int:
     """Get the camera port based on printer model.
 
-    X1/H2/P2 series use RTSP on port 322.
+    X1/X2/H2/P2 series use RTSP on port 322.
     A1/P1 series use chamber image protocol on port 6000.
     """
     if supports_rtsp(model):
@@ -504,6 +510,7 @@ async def capture_camera_frame_bytes(
 
     logger.info("Capturing camera frame bytes from %s using RTSP (model: %s)", ip_address, model)
 
+    process = None
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -511,6 +518,7 @@ async def capture_camera_frame_bytes(
             stderr=asyncio.subprocess.PIPE,
         )
 
+        _active_capture_pids.add(process.pid)
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except TimeoutError:
@@ -534,6 +542,8 @@ async def capture_camera_frame_bytes(
         logger.exception("Camera frame bytes capture failed: %s", e)
         return None
     finally:
+        if process is not None:
+            _active_capture_pids.discard(process.pid)
         proxy_server.close()
         await proxy_server.wait_closed()
 
@@ -593,8 +603,10 @@ async def test_camera_connection(
     """
     import tempfile
 
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-        test_path = Path(f.name)
+    fd, tmp_name = tempfile.mkstemp(suffix=".jpg")
+    os.close(fd)
+    test_path = Path(tmp_name)
+    test_path.chmod(0o600)
 
     try:
         success = await capture_camera_frame(

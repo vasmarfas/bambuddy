@@ -19,6 +19,7 @@ import {
   Calculator,
   Calendar,
   ChevronDown,
+  Users,
 } from 'lucide-react';
 import {
   BarChart,
@@ -128,29 +129,50 @@ function QuickStatsWidget({
     total_cost: number;
     total_energy_kwh: number;
     total_energy_cost: number;
+    energy_data_warming_up?: boolean;
   } | undefined;
   currency: string;
 }) {
   const { t } = useTranslation();
+
+  const warmingUp = stats?.energy_data_warming_up === true;
+  const warmingUpTooltip = warmingUp ? t('stats.energyWarmingUpTooltip') : undefined;
 
   const items = [
     { icon: Package, color: 'text-bambu-green', label: t('stats.totalPrints'), value: `${stats?.total_prints || 0}` },
     { icon: Clock, color: 'text-blue-400', label: t('stats.printTime'), value: `${stats?.total_print_time_hours?.toFixed(1) ?? '0'}h` },
     { icon: Package, color: 'text-orange-400', label: t('stats.filamentUsed'), value: formatWeight(stats?.total_filament_grams || 0) },
     { icon: DollarSign, color: 'text-green-400', label: t('stats.filamentCost'), value: `${currency} ${stats?.total_cost?.toFixed(2) ?? '0.00'}` },
-    { icon: Zap, color: 'text-yellow-400', label: t('stats.energyUsed'), value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh` },
-    { icon: DollarSign, color: 'text-yellow-500', label: t('stats.energyCost'), value: `${currency} ${stats?.total_energy_cost?.toFixed(2) ?? '0.00'}` },
+    {
+      icon: Zap,
+      color: 'text-yellow-400',
+      label: t('stats.energyUsed'),
+      value: `${stats?.total_energy_kwh?.toFixed(3) ?? '0.000'} kWh`,
+      warning: warmingUp,
+      tooltip: warmingUpTooltip,
+    },
+    {
+      icon: DollarSign,
+      color: 'text-yellow-500',
+      label: t('stats.energyCost'),
+      value: `${currency} ${stats?.total_energy_cost?.toFixed(2) ?? '0.00'}`,
+      warning: warmingUp,
+      tooltip: warmingUpTooltip,
+    },
   ];
 
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
       {items.map((item) => (
-        <div key={item.label} className="flex items-start gap-3">
+        <div key={item.label} className="flex items-start gap-3" title={item.tooltip}>
           <div className={`p-2 rounded-lg bg-bambu-dark ${item.color}`}>
             <item.icon className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-xs text-bambu-gray">{item.label}</p>
+            <p className="text-xs text-bambu-gray flex items-center gap-1">
+              {item.label}
+              {item.warning && <AlertTriangle className="w-3 h-3 text-yellow-400" aria-label={item.tooltip} />}
+            </p>
             <p className="text-xl font-bold text-white">{item.value}</p>
           </div>
         </div>
@@ -706,17 +728,19 @@ function FilamentTrendsWidget({
   return <FilamentTrends archives={archives} currency={currency} dateFrom={dateFrom} dateTo={dateTo} />;
 }
 
-function FailureAnalysisWidget({ size = 1, dateFrom, dateTo }: {
+function FailureAnalysisWidget({ size = 1, dateFrom, dateTo, createdById }: {
   size?: 1 | 2 | 4;
   dateFrom?: string;
   dateTo?: string;
+  createdById?: number;
 }) {
   const { t } = useTranslation();
   const hasDateRange = !!(dateFrom || dateTo);
   const { data: analysis, isLoading } = useQuery({
-    queryKey: ['failureAnalysis', dateFrom, dateTo],
+    queryKey: ['failureAnalysis', dateFrom, dateTo, createdById ?? 'all'],
     queryFn: () => api.getFailureAnalysis({
       ...(hasDateRange ? { dateFrom, dateTo } : { days: 30 }),
+      createdById,
     }),
   });
 
@@ -923,12 +947,15 @@ function RecordsWidget({ archives, currency }: { archives: ArchiveSlim[]; curren
 export function StatsPage() {
   const { t } = useTranslation();
   const { showToast } = useToast();
-  const { hasPermission } = useAuth();
+  const { hasPermission, authEnabled } = useAuth();
   const [isExporting, setIsExporting] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [dashboardKey, setDashboardKey] = useState(0);
   const [hiddenCount, setHiddenCount] = useState(0);
   const [isRecalculating, setIsRecalculating] = useState(false);
+  const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
+  const [showUserPicker, setShowUserPicker] = useState(false);
+  const canFilterByUser = authEnabled && hasPermission('stats:filter_by_user');
   const [timeframe, setTimeframe] = useState<TimeframeState>(() => {
     try {
       const saved = localStorage.getItem('bambusy-stats-timeframe');
@@ -977,11 +1004,15 @@ export function StatsPage() {
     };
   }, [dashboardKey]);
 
-  const { data: stats, isLoading, refetch: refetchStats } = useQuery({
-    queryKey: ['archiveStats', effectiveDateRange.dateFrom, effectiveDateRange.dateTo],
+  // Only pass createdById when a user is actually selected (not "All Users")
+  const createdByIdParam = selectedUserId !== null ? selectedUserId : undefined;
+
+  const { data: stats, isLoading, isFetching: isStatsFetching, refetch: refetchStats } = useQuery({
+    queryKey: ['archiveStats', effectiveDateRange.dateFrom, effectiveDateRange.dateTo, createdByIdParam ?? 'all'],
     queryFn: () => api.getArchiveStats({
       dateFrom: effectiveDateRange.dateFrom,
       dateTo: effectiveDateRange.dateTo,
+      createdById: createdByIdParam,
     }),
   });
 
@@ -990,9 +1021,9 @@ export function StatsPage() {
     queryFn: api.getPrinters,
   });
 
-  const { data: archives, refetch: refetchArchives } = useQuery({
-    queryKey: ['archivesSlim', effectiveDateRange.dateFrom, effectiveDateRange.dateTo],
-    queryFn: () => api.getArchivesSlim(effectiveDateRange.dateFrom, effectiveDateRange.dateTo),
+  const { data: archives, isFetching: isArchivesFetching, refetch: refetchArchives } = useQuery({
+    queryKey: ['archivesSlim', effectiveDateRange.dateFrom, effectiveDateRange.dateTo, createdByIdParam ?? 'all'],
+    queryFn: () => api.getArchivesSlim(effectiveDateRange.dateFrom, effectiveDateRange.dateTo, createdByIdParam),
   });
 
   const { data: settings } = useQuery({
@@ -1000,11 +1031,23 @@ export function StatsPage() {
     queryFn: api.getSettings,
   });
 
+  const { data: users } = useQuery({
+    queryKey: ['users'],
+    queryFn: api.getUsers,
+    enabled: canFilterByUser,
+  });
+
+  const selectedUserLabel = useMemo(() => {
+    if (selectedUserId === null) return t('stats.allUsers', 'All Users');
+    if (selectedUserId === -1) return t('stats.noUser', 'No User (System)');
+    return users?.find(u => u.id === selectedUserId)?.username ?? '?';
+  }, [selectedUserId, users, t]);
+
   const handleExport = async (format: 'csv' | 'xlsx') => {
     setShowExportMenu(false);
     setIsExporting(true);
     try {
-      const { blob, filename } = await api.exportStats({ format, days: 90 });
+      const { blob, filename } = await api.exportStats({ format, days: 90, createdById: createdByIdParam });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -1031,6 +1074,8 @@ export function StatsPage() {
       setIsRecalculating(false);
     }
   };
+
+  const isRefetching = (isStatsFetching || isArchivesFetching) && !isLoading;
 
   const currency = getCurrencySymbol(settings?.currency || 'USD');
   const printerMap = new Map(printers?.map((p) => [String(p.id), p.name]) || []);
@@ -1069,7 +1114,7 @@ export function StatsPage() {
     {
       id: 'failure-analysis',
       title: t('stats.failureAnalysis'),
-      component: (size) => <FailureAnalysisWidget size={size} dateFrom={effectiveDateRange.dateFrom} dateTo={effectiveDateRange.dateTo} />,
+      component: (size) => <FailureAnalysisWidget size={size} dateFrom={effectiveDateRange.dateFrom} dateTo={effectiveDateRange.dateTo} createdById={createdByIdParam} />,
       defaultSize: 1,
     },
     {
@@ -1102,7 +1147,10 @@ export function StatsPage() {
     <div className="p-4 md:p-8">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-white">{t('stats.title')}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-white">{t('stats.title')}</h1>
+            {isRefetching && <Loader2 className="w-5 h-5 text-bambu-green animate-spin" />}
+          </div>
           <p className="text-bambu-gray">{t('stats.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -1180,6 +1228,63 @@ export function StatsPage() {
               </div>
             )}
           </div>
+          {/* User Filter */}
+          {canFilterByUser && users && users.length > 0 && (
+            <div className="relative">
+              <Button
+                variant="secondary"
+                onClick={() => setShowUserPicker(!showUserPicker)}
+              >
+                <Users className="w-4 h-4" />
+                {selectedUserLabel}
+                <ChevronDown className="w-3 h-3" />
+              </Button>
+              {showUserPicker && (
+                <>
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setShowUserPicker(false)}
+                  />
+                  <div className="absolute right-0 top-full mt-1 w-48 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl z-20 p-2 max-h-64 overflow-y-auto">
+                    <button
+                      className={`w-full px-3 py-2 text-left text-sm rounded-md transition-colors ${
+                        selectedUserId === null
+                          ? 'bg-bambu-green text-white'
+                          : 'text-white hover:bg-bambu-dark-tertiary'
+                      }`}
+                      onClick={() => { setSelectedUserId(null); setShowUserPicker(false); }}
+                    >
+                      {t('stats.allUsers', 'All Users')}
+                    </button>
+                    <button
+                      className={`w-full px-3 py-2 text-left text-sm rounded-md transition-colors ${
+                        selectedUserId === -1
+                          ? 'bg-bambu-green text-white'
+                          : 'text-white hover:bg-bambu-dark-tertiary'
+                      }`}
+                      onClick={() => { setSelectedUserId(-1); setShowUserPicker(false); }}
+                    >
+                      {t('stats.noUser', 'No User (System)')}
+                    </button>
+                    <div className="border-t border-bambu-dark-tertiary my-1" />
+                    {users.map(u => (
+                      <button
+                        key={u.id}
+                        className={`w-full px-3 py-2 text-left text-sm rounded-md transition-colors ${
+                          selectedUserId === u.id
+                            ? 'bg-bambu-green text-white'
+                            : 'text-white hover:bg-bambu-dark-tertiary'
+                        }`}
+                        onClick={() => { setSelectedUserId(u.id); setShowUserPicker(false); }}
+                      >
+                        {u.username}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           {/* Timeframe Selector */}
           <div className="relative">
             <Button

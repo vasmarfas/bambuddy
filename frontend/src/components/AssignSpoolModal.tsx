@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, Package, Search } from 'lucide-react';
@@ -27,7 +27,11 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const [disableFiltering, setDisableFiltering] = useState(false);
   const [selectedSpoolId, setSelectedSpoolId] = useState<number | null>(null);
+  useEffect(() => {
+    setSelectedSpoolId(null);
+  }, [disableFiltering]);
   const [searchFilter, setSearchFilter] = useState('');
   const [pendingAssignId, setPendingAssignId] = useState<number | null>(null);
   const [showMismatchConfirm, setShowMismatchConfirm] = useState(false);
@@ -38,6 +42,12 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     spoolProfile?: string;
     trayProfile?: string;
   } | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setDisableFiltering(false);
+    }
+  }, [isOpen]);
 
   const { data: spools, isLoading } = useQuery({
     queryKey: ['inventory-spools'],
@@ -128,16 +138,28 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
     !assignedSpoolIds.has(spool.id) && (isExternalSlot || (!spool.tag_uid && !spool.tray_uuid))
   );
 
-  const filteredSpools = manualSpools?.filter((spool: InventorySpool) => {
-    if (!searchFilter) return true;
+  // Filtering logic with toggle: search filter always applies, AMS tray profile filter is optional
+  let filteredSpools = manualSpools;
+  if (!disableFiltering) {
+    if (trayInfo?.profile || trayInfo?.type) {
+      const trayProfile = normalizeValue(trayInfo.profile || trayInfo.type);
+      filteredSpools = filteredSpools?.filter((spool: InventorySpool) => {
+        const spoolProfile = normalizeValue(spool.slicer_filament_name || spool.slicer_filament);
+        return trayProfile && spoolProfile && spoolProfile === trayProfile;
+      });
+    }
+  }
+  if (searchFilter && filteredSpools) {
     const q = searchFilter.toLowerCase();
-    return (
-      spool.material.toLowerCase().includes(q) ||
-      (spool.brand?.toLowerCase().includes(q) ?? false) ||
-      (spool.color_name?.toLowerCase().includes(q) ?? false) ||
-      (spool.subtype?.toLowerCase().includes(q) ?? false)
-    );
-  });
+    filteredSpools = filteredSpools.filter((spool: InventorySpool) => {
+      return (
+        spool.material.toLowerCase().includes(q) ||
+        (spool.brand?.toLowerCase().includes(q) ?? false) ||
+        (spool.color_name?.toLowerCase().includes(q) ?? false) ||
+        (spool.subtype?.toLowerCase().includes(q) ?? false)
+      );
+    });
+  }
 
   const handleAssign = () => {
     if (!selectedSpoolId) return;
@@ -192,13 +214,13 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
 
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-4 overflow-y-auto">
         <div
           className="absolute inset-0 bg-black/60 backdrop-blur-sm"
           onClick={onClose}
         />
 
-      <div className="relative w-full max-w-2xl mx-4 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl">
+      <div className="relative w-full max-w-2xl bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col my-auto">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-bambu-dark-tertiary">
           <div className="flex items-center gap-2">
@@ -214,7 +236,7 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
         </div>
 
         {/* Content */}
-        <div className="p-4 space-y-4">
+        <div className="p-4 space-y-4 overflow-y-auto">
           {/* Tray info */}
           {trayInfo && (
             <div className="p-3 bg-bambu-dark rounded-lg border border-bambu-dark-tertiary">
@@ -295,27 +317,41 @@ export function AssignSpoolModal({ isOpen, onClose, printerId, amsId, trayId, tr
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="flex justify-end gap-2 p-4 border-t border-bambu-dark-tertiary">
-          <Button variant="secondary" onClick={onClose}>
-            {t('common.cancel')}
-          </Button>
-          <Button
-            onClick={handleAssign}
-            disabled={!selectedSpoolId || assignMutation.isPending}
-          >
-            {assignMutation.isPending ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {t('inventory.assigning')}
-              </>
-            ) : (
-              <>
-                <Package className="w-4 h-4" />
-                {t('inventory.assignSpool')}
-              </>
-            )}
-          </Button>
+        {/* Footer with filtering toggle */}
+        <div className="flex justify-between items-center p-4 border-t border-bambu-dark-tertiary">
+          <div className="flex items-center gap-2">
+            <input
+              id="disable-filtering-toggle"
+              type="checkbox"
+              checked={disableFiltering}
+              onChange={() => setDisableFiltering(v => !v)}
+              className="accent-bambu-green w-4 h-4 rounded focus:ring-0 border-bambu-dark-tertiary"
+            />
+            <label htmlFor="disable-filtering-toggle" className="text-xs text-bambu-gray select-none cursor-pointer">
+              {t('inventory.showAllSpools')}
+            </label>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose}>
+              {t('common.cancel')}
+            </Button>
+            <Button
+              onClick={handleAssign}
+              disabled={!selectedSpoolId || assignMutation.isPending}
+            >
+              {assignMutation.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {t('inventory.assigning')}
+                </>
+              ) : (
+                <>
+                  <Package className="w-4 h-4" />
+                  {t('inventory.assignSpool')}
+                </>
+              )}
+            </Button>
+          </div>
         </div>
 
 

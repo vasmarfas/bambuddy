@@ -28,7 +28,7 @@ class PrintArchive(Base):
     print_time_seconds: Mapped[int | None] = mapped_column(Integer)
     filament_used_grams: Mapped[float | None] = mapped_column(Float)
     filament_type: Mapped[str | None] = mapped_column(String(50))
-    filament_color: Mapped[str | None] = mapped_column(String(50))
+    filament_color: Mapped[str | None] = mapped_column(String(200))
     layer_height: Mapped[float | None] = mapped_column(Float)
     total_layers: Mapped[int | None] = mapped_column(Integer)
     nozzle_diameter: Mapped[float | None] = mapped_column(Float)
@@ -42,6 +42,12 @@ class PrintArchive(Base):
     status: Mapped[str] = mapped_column(String(20), default="completed")
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    # Printer-assigned subtask identifier from MQTT. Used to resume the same
+    # archive row across a backend restart during a long-running print (#972):
+    # if the same subtask_id reappears after restart, we know it's the same
+    # print and keep the original row instead of cancel-then-create.
+    subtask_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Extended metadata (JSON blob for flexibility)
     extra_data: Mapped[dict | None] = mapped_column(JSON)
@@ -65,6 +71,9 @@ class PrintArchive(Base):
     # Energy tracking
     energy_kwh: Mapped[float | None] = mapped_column(Float)  # Energy consumed in kWh
     energy_cost: Mapped[float | None] = mapped_column(Float)  # Cost of energy consumed
+    # Plug lifetime counter captured at print start; delta at print end becomes energy_kwh.
+    # Persisted so per-print tracking survives backend restarts mid-print (#941).
+    energy_start_kwh: Mapped[float | None] = mapped_column(Float)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

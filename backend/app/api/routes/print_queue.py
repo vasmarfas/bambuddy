@@ -18,10 +18,13 @@ from backend.app.core.database import get_db
 from backend.app.core.permissions import Permission
 from backend.app.models.archive import PrintArchive
 from backend.app.models.library import LibraryFile
+from backend.app.models.print_batch import PrintBatch
 from backend.app.models.print_queue import PrintQueueItem
 from backend.app.models.printer import Printer
+from backend.app.models.project import Project
 from backend.app.models.user import User
 from backend.app.schemas.print_queue import (
+    PrintBatchResponse,
     PrintQueueBulkUpdate,
     PrintQueueBulkUpdateResponse,
     PrintQueueItemCreate,
@@ -209,6 +212,13 @@ def _enrich_response(item: PrintQueueItem) -> PrintQueueItemResponse:
         # User tracking (Issue #206)
         "created_by_id": item.created_by_id,
         "created_by_username": item.created_by.username if item.created_by else None,
+        # Batch grouping
+        "batch_id": item.batch_id,
+        "batch_name": item.batch.name if item.batch else None,
+        # SJF scheduling
+        "been_jumped": item.been_jumped,
+        # Auto-print G-code injection
+        "gcode_injection": item.gcode_injection,
     }
     response = PrintQueueItemResponse(**item_dict)
     if item.archive:
@@ -281,6 +291,7 @@ async def list_queue(
             selectinload(PrintQueueItem.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.batch),
         )
         .order_by(PrintQueueItem.printer_id.nulls_first(), PrintQueueItem.position)
     )
@@ -407,6 +418,36 @@ async def add_to_queue(
             all_types = existing_types | set(override_types)
             required_filament_types = json.dumps(sorted(all_types))
 
+    # Validate quantity
+    quantity = max(1, data.quantity)
+
+    # Create batch if quantity > 1
+    batch = None
+    batch_id = None
+    if quantity > 1:
+        # Derive batch name from source file
+        batch_name_base = "Batch"
+        if archive:
+            batch_name_base = archive.print_name or archive.filename or "Batch"
+        elif library_file:
+            if library_file.file_metadata:
+                batch_name_base = library_file.file_metadata.get("print_name") or library_file.filename
+            else:
+                batch_name_base = library_file.filename
+        batch_name_base = batch_name_base.replace(".gcode.3mf", "").replace(".3mf", "")
+
+        batch = PrintBatch(
+            name=f"{batch_name_base} ×{quantity}",
+            archive_id=data.archive_id,
+            library_file_id=data.library_file_id,
+            quantity=quantity,
+            status="active",
+            created_by_id=current_user.id if current_user else None,
+        )
+        db.add(batch)
+        await db.flush()  # Get batch.id before creating items
+        batch_id = batch.id
+
     # Get next position for this printer (or for unassigned/model-based items)
     if data.printer_id is not None:
         result = await db.execute(
@@ -423,40 +464,78 @@ async def add_to_queue(
         )
     max_pos = result.scalar() or 0
 
-    item = PrintQueueItem(
-        printer_id=data.printer_id,
-        target_model=target_model_norm,
-        target_location=data.target_location,
-        required_filament_types=required_filament_types,
-        filament_overrides=filament_overrides_json,
-        archive_id=data.archive_id,
-        library_file_id=data.library_file_id,
-        scheduled_time=data.scheduled_time,
-        require_previous_success=data.require_previous_success,
-        auto_off_after=data.auto_off_after,
-        manual_start=data.manual_start,
-        ams_mapping=json.dumps(data.ams_mapping) if data.ams_mapping else None,
-        plate_id=data.plate_id,
-        bed_levelling=data.bed_levelling,
-        flow_cali=data.flow_cali,
-        vibration_cali=data.vibration_cali,
-        layer_inspect=data.layer_inspect,
-        timelapse=data.timelapse,
-        use_ams=data.use_ams,
-        position=max_pos + 1,
-        status="pending",
-        created_by_id=current_user.id if current_user else None,
-    )
-    db.add(item)
-    await db.commit()
-    await db.refresh(item)
+    # Resolve print_time_seconds for SJF scheduling (cache on item at creation)
+    cached_print_time = None
+    if archive:
+        cached_print_time = archive.print_time_seconds
+        if data.plate_id:
+            archive_path = settings.base_dir / archive.file_path
+            if archive_path.exists():
+                plate_time = _extract_print_time_from_3mf(archive_path, data.plate_id)
+                if plate_time is not None:
+                    cached_print_time = plate_time
+    elif library_file:
+        if library_file.file_metadata:
+            cached_print_time = library_file.file_metadata.get("print_time_seconds")
+        if data.plate_id:
+            lib_path = Path(library_file.file_path)
+            library_file_path = lib_path if lib_path.is_absolute() else settings.base_dir / library_file.file_path
+            if library_file_path.exists():
+                plate_time = _extract_print_time_from_3mf(library_file_path, data.plate_id)
+                if plate_time is not None:
+                    cached_print_time = plate_time
 
-    # Load relationships for response
-    await db.refresh(item, ["archive", "printer", "library_file", "created_by"])
+    # Validate project exists before insert so a bogus ID yields 404, not an FK-constraint 500
+    if data.project_id is not None:
+        project_result = await db.execute(select(Project).where(Project.id == data.project_id))
+        if not project_result.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Project not found")
+
+    ams_mapping_json = json.dumps(data.ams_mapping) if data.ams_mapping else None
+    items = []
+    for i in range(quantity):
+        item = PrintQueueItem(
+            printer_id=data.printer_id,
+            target_model=target_model_norm,
+            target_location=data.target_location,
+            required_filament_types=required_filament_types,
+            filament_overrides=filament_overrides_json,
+            archive_id=data.archive_id,
+            library_file_id=data.library_file_id,
+            scheduled_time=data.scheduled_time,
+            require_previous_success=data.require_previous_success,
+            auto_off_after=data.auto_off_after,
+            manual_start=data.manual_start,
+            ams_mapping=ams_mapping_json,
+            plate_id=data.plate_id,
+            bed_levelling=data.bed_levelling,
+            flow_cali=data.flow_cali,
+            vibration_cali=data.vibration_cali,
+            layer_inspect=data.layer_inspect,
+            timelapse=data.timelapse,
+            use_ams=data.use_ams,
+            gcode_injection=data.gcode_injection,
+            project_id=data.project_id,
+            position=max_pos + 1 + i,
+            status="pending",
+            created_by_id=current_user.id if current_user else None,
+            batch_id=batch_id,
+            print_time_seconds=cached_print_time,
+        )
+        db.add(item)
+        items.append(item)
+
+    await db.commit()
+
+    # Refresh the first item for the response
+    item = items[0]
+    await db.refresh(item)
+    await db.refresh(item, ["archive", "printer", "library_file", "created_by", "batch"])
 
     source_name = f"archive {data.archive_id}" if data.archive_id else f"library file {data.library_file_id}"
     target_desc = data.printer_id or (f"model {target_model_norm}" if target_model_norm else "unassigned")
-    logger.info("Added %s to queue for %s", source_name, target_desc)
+    qty_desc = f" (×{quantity})" if quantity > 1 else ""
+    logger.info("Added %s to queue for %s%s", source_name, target_desc, qty_desc)
 
     # MQTT relay - publish queue job added
     try:
@@ -481,6 +560,8 @@ async def add_to_queue(
             else f"Job #{item.id}"
         )
         job_name = job_name.replace(".gcode.3mf", "").replace(".3mf", "")
+        if quantity > 1:
+            job_name = f"{job_name} ×{quantity}"
         target = (
             item.printer.name if item.printer else (f"Any {item.target_model}" if target_model_norm else "Unassigned")
         )
@@ -561,6 +642,106 @@ async def bulk_update_queue_items(
     )
 
 
+# --- Batch endpoints ---
+
+
+@router.get("/batches", response_model=list[PrintBatchResponse])
+async def list_batches(
+    status: str | None = Query(None, description="Filter by status (active, completed, cancelled)"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+):
+    """List all print batches with progress stats."""
+    query = select(PrintBatch).order_by(PrintBatch.created_at.desc())
+    if status:
+        query = query.where(PrintBatch.status == status)
+    result = await db.execute(query)
+    batches = result.scalars().all()
+
+    responses = []
+    for batch in batches:
+        responses.append(await _build_batch_response(db, batch))
+    return responses
+
+
+@router.get("/batches/{batch_id}", response_model=PrintBatchResponse)
+async def get_batch(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_READ),
+):
+    """Get a print batch with progress stats."""
+    result = await db.execute(select(PrintBatch).where(PrintBatch.id == batch_id))
+    batch = result.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+    return await _build_batch_response(db, batch)
+
+
+@router.delete("/batches/{batch_id}")
+async def cancel_batch(
+    batch_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.QUEUE_DELETE_ALL),
+):
+    """Cancel all pending items in a batch and mark batch as cancelled."""
+    result = await db.execute(select(PrintBatch).where(PrintBatch.id == batch_id))
+    batch = result.scalar_one_or_none()
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+
+    # Cancel all pending queue items in this batch
+    result = await db.execute(
+        select(PrintQueueItem).where(and_(PrintQueueItem.batch_id == batch_id, PrintQueueItem.status == "pending"))
+    )
+    pending_items = result.scalars().all()
+    cancelled_count = 0
+    for item in pending_items:
+        item.status = "cancelled"
+        cancelled_count += 1
+
+    batch.status = "cancelled"
+    await db.commit()
+
+    return {"message": f"Batch cancelled, {cancelled_count} pending items cancelled"}
+
+
+async def _build_batch_response(db: AsyncSession, batch: PrintBatch) -> PrintBatchResponse:
+    """Build a batch response with derived counts from queue items."""
+    # Count queue items by status
+    result = await db.execute(
+        select(PrintQueueItem.status, func.count(PrintQueueItem.id))
+        .where(PrintQueueItem.batch_id == batch.id)
+        .group_by(PrintQueueItem.status)
+    )
+    status_counts = {row[0]: row[1] for row in result.fetchall()}
+
+    # Load created_by for username
+    created_by_username = None
+    if batch.created_by_id:
+        result = await db.execute(select(User).where(User.id == batch.created_by_id))
+        user = result.scalar_one_or_none()
+        if user:
+            created_by_username = user.username
+
+    return PrintBatchResponse(
+        id=batch.id,
+        name=batch.name,
+        archive_id=batch.archive_id,
+        library_file_id=batch.library_file_id,
+        quantity=batch.quantity,
+        status=batch.status,
+        created_at=batch.created_at,
+        created_by_id=batch.created_by_id,
+        created_by_username=created_by_username,
+        pending_count=status_counts.get("pending", 0),
+        printing_count=status_counts.get("printing", 0),
+        completed_count=status_counts.get("completed", 0),
+        failed_count=status_counts.get("failed", 0),
+        cancelled_count=status_counts.get("cancelled", 0),
+    )
+
+
 @router.get("/{item_id}", response_model=PrintQueueItemResponse)
 async def get_queue_item(
     item_id: int,
@@ -575,6 +756,7 @@ async def get_queue_item(
             selectinload(PrintQueueItem.printer),
             selectinload(PrintQueueItem.library_file),
             selectinload(PrintQueueItem.created_by),
+            selectinload(PrintQueueItem.batch),
         )
         .where(PrintQueueItem.id == item_id)
     )
@@ -656,7 +838,7 @@ async def update_queue_item(
         setattr(item, field, value)
 
     await db.commit()
-    await db.refresh(item, ["archive", "printer", "library_file", "created_by"])
+    await db.refresh(item, ["archive", "printer", "library_file", "created_by", "batch"])
 
     logger.info("Updated queue item %s", item_id)
     return _enrich_response(item)
@@ -844,7 +1026,11 @@ async def start_queue_item(
     """
     result = await db.execute(
         select(PrintQueueItem)
-        .options(selectinload(PrintQueueItem.archive), selectinload(PrintQueueItem.printer))
+        .options(
+            selectinload(PrintQueueItem.archive),
+            selectinload(PrintQueueItem.printer),
+            selectinload(PrintQueueItem.batch),
+        )
         .where(PrintQueueItem.id == item_id)
     )
     item = result.scalar_one_or_none()
@@ -857,7 +1043,7 @@ async def start_queue_item(
     # Clear manual_start flag so scheduler picks it up
     item.manual_start = False
     await db.commit()
-    await db.refresh(item, ["archive", "printer", "library_file", "created_by"])
+    await db.refresh(item, ["archive", "printer", "library_file", "created_by", "batch"])
 
     logger.info("Manually started queue item %s (cleared manual_start flag)", item_id)
     return _enrich_response(item)

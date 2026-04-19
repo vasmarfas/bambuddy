@@ -158,6 +158,8 @@ class PrintSession:
     # Snapshot of spool assignments at print start: {(ams_id, tray_id): spool_id}
     # Prevents usage loss when on_ams_change unlinks a spool mid-print
     spool_assignments: dict[tuple[int, int], int] = field(default_factory=dict)
+    # AMS mapping from print command (captured at start, needed when auto-archive is off)
+    ams_mapping: list[int] | None = None
 
 
 # Module-level storage, keyed by printer_id
@@ -237,11 +239,10 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
 
     ams_raw = state.raw_data.get("ams", [])
     ams_data = ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw if isinstance(ams_raw, list) else []
-    if not ams_data:
-        logger.debug("[UsageTracker] No AMS data for printer %d, skipping", printer_id)
-        return
 
     tray_remain_start: dict[tuple[int, int], int] = {}
+    skipped_invalid: list[str] = []
+
     for ams_unit in ams_data:
         ams_id = int(ams_unit.get("id", 0))
         for tray in ams_unit.get("tray", []):
@@ -249,6 +250,35 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
             remain = tray.get("remain", -1)
             if isinstance(remain, int) and 0 <= remain <= 100:
                 tray_remain_start[(ams_id, tray_id)] = remain
+            else:
+                skipped_invalid.append(f"AMS{ams_id}-T{tray_id}(remain={remain})")
+
+    # Also capture VT (external) tray remain% — these are separate from AMS units
+    vt_tray_raw = state.raw_data.get("vt_tray") or []
+    if isinstance(vt_tray_raw, dict):
+        vt_tray_raw = [vt_tray_raw]
+    for vt in vt_tray_raw:
+        if not isinstance(vt, dict):
+            continue
+        vt_id = int(vt.get("id", 254))
+        # VT tray id 254 → (ams_id=255, tray_id=0), id 255 → (ams_id=255, tray_id=1)
+        vt_tray_id = vt_id - 254
+        remain = vt.get("remain", -1)
+        if isinstance(remain, int) and 0 <= remain <= 100:
+            tray_remain_start[(255, vt_tray_id)] = remain
+        else:
+            skipped_invalid.append(f"VT{vt_id}(remain={remain})")
+
+    if skipped_invalid:
+        logger.info(
+            "[UsageTracker] Skipped trays with invalid remain%% for printer %d: %s",
+            printer_id,
+            ", ".join(skipped_invalid),
+        )
+
+    if not ams_data and not vt_tray_raw:
+        logger.debug("[UsageTracker] No AMS or VT tray data for printer %d, skipping", printer_id)
+        return
 
     print_name = data.get("subtask_name", "") or data.get("filename", "unknown")
 
@@ -305,6 +335,7 @@ async def on_print_start(printer_id: int, data: dict, printer_manager, db: Async
         tray_remain_start=tray_remain_start,
         tray_now_at_start=tray_now_at_start,
         spool_assignments=spool_assignments,
+        ams_mapping=data.get("ams_mapping"),
     )
     _active_sessions[printer_id] = session
 
@@ -349,6 +380,11 @@ async def on_print_complete(
     default_cost_str = await get_setting(db, "default_filament_cost")
     default_filament_cost = float(default_cost_str) if default_cost_str else 0.0
 
+    # Fall back to ams_mapping captured at print start (needed when auto-archive is off
+    # and the caller can't retrieve the mapping from _print_ams_mappings without archive_id)
+    if not ams_mapping and session and session.ams_mapping:
+        ams_mapping = session.ams_mapping
+
     logger.info(
         "[UsageTracker] on_print_complete: printer=%d, archive=%s, session=%s, ams_mapping=%s",
         printer_id,
@@ -369,10 +405,21 @@ async def on_print_complete(
         )
 
     # --- Path 1 (PRIMARY): 3MF per-filament estimates ---
-    if archive_id:
-        print_name = (
-            (session.print_name if session else None) or data.get("subtask_name", "") or data.get("filename", "unknown")
-        )
+    print_name = (
+        (session.print_name if session else None) or data.get("subtask_name", "") or data.get("filename", "unknown")
+    )
+
+    # When auto-archive is disabled (archive_id=None), try to find a 3MF by filename
+    # from the library or previous archives so we can still track filament usage.
+    threemf_path = None
+    if not archive_id:
+        from backend.app.core.config import settings as app_settings
+
+        search_filename = data.get("filename") or data.get("subtask_name") or (session.print_name if session else "")
+        if search_filename:
+            threemf_path = await _find_3mf_by_filename(printer_id, search_filename, db, app_settings.base_dir)
+
+    if archive_id or threemf_path:
         threemf_results = await _track_from_3mf(
             printer_id,
             archive_id,
@@ -388,6 +435,7 @@ async def on_print_complete(
             default_filament_cost=default_filament_cost,
             spool_assignments=session.spool_assignments if session else None,
             print_started_at=session.started_at if session else None,
+            threemf_path=threemf_path,
         )
         results.extend(threemf_results)
 
@@ -400,94 +448,123 @@ async def on_print_complete(
                 ams_raw.get("ams", []) if isinstance(ams_raw, dict) else ams_raw if isinstance(ams_raw, list) else []
             )
 
+            # Collect all trays to check: AMS trays + VT (external) trays
+            # Each entry: (ams_id_for_assignment, tray_id_for_assignment, current_remain, label)
+            trays_to_check: list[tuple[int, int, int, str]] = []
+
             for ams_unit in ams_data:
                 ams_id = int(ams_unit.get("id", 0))
                 for tray in ams_unit.get("tray", []):
                     tray_id = int(tray.get("id", 0))
-                    key = (ams_id, tray_id)
+                    remain = tray.get("remain", -1)
+                    trays_to_check.append((ams_id, tray_id, remain, f"AMS{ams_id}-T{tray_id}"))
 
-                    if key in handled_trays:
-                        continue  # Already tracked via 3MF
+            # VT (external) trays — same remain% delta logic
+            vt_tray_raw = state.raw_data.get("vt_tray") or []
+            if isinstance(vt_tray_raw, dict):
+                vt_tray_raw = [vt_tray_raw]
+            for vt in vt_tray_raw:
+                if not isinstance(vt, dict):
+                    continue
+                vt_id = int(vt.get("id", 254))
+                vt_tray_id = vt_id - 254  # 254→0, 255→1
+                remain = vt.get("remain", -1)
+                trays_to_check.append((255, vt_tray_id, remain, f"VT{vt_id}"))
 
-                    if key not in session.tray_remain_start:
-                        continue
+            for assign_ams_id, assign_tray_id, current_remain, tray_label in trays_to_check:
+                key = (assign_ams_id, assign_tray_id)
 
-                    current_remain = tray.get("remain", -1)
-                    if not isinstance(current_remain, int) or current_remain < 0 or current_remain > 100:
-                        continue
+                if key in handled_trays:
+                    continue  # Already tracked via 3MF
 
-                    start_remain = session.tray_remain_start[key]
-                    delta_pct = start_remain - current_remain
+                if key not in session.tray_remain_start:
+                    continue
 
-                    if delta_pct <= 0:
-                        continue  # No consumption or tray was refilled
-
-                    spool_id = await _resolve_spool_id_for_tray(
-                        printer_id=printer_id,
-                        ams_id=ams_id,
-                        tray_id=tray_id,
-                        db=db,
-                        spool_assignments_snapshot=session.spool_assignments,
-                        print_started_at=session.started_at,
-                    )
-                    if spool_id is None:
-                        continue
-
-                    # Load spool
-                    spool_result = await db.execute(select(Spool).where(Spool.id == spool_id))
-                    spool = spool_result.scalar_one_or_none()
-                    if not spool:
-                        continue
-
-                    # Compute weight consumed
-                    weight_grams = (delta_pct / 100.0) * spool.label_weight
-
-                    # Update spool
-                    spool.weight_used = (spool.weight_used or 0) + weight_grams
-                    spool.last_used = datetime.now(timezone.utc)
-
-                    # Calculate cost for this usage
-                    cost = None
-                    cost_per_kg = spool.cost_per_kg if spool.cost_per_kg is not None else default_filament_cost
-                    if cost_per_kg > 0:
-                        cost = round((weight_grams / 1000.0) * cost_per_kg, 2)
-
-                    # Insert usage history record
-                    history = SpoolUsageHistory(
-                        spool_id=spool.id,
-                        printer_id=printer_id,
-                        print_name=session.print_name,
-                        weight_used=round(weight_grams, 1),
-                        percent_used=delta_pct,
-                        status=status,
-                        cost=cost,
-                        archive_id=archive_id,
-                    )
-                    db.add(history)
-
-                    handled_trays.add(key)
-                    results.append(
-                        {
-                            "spool_id": spool.id,
-                            "weight_used": round(weight_grams, 1),
-                            "percent_used": delta_pct,
-                            "ams_id": ams_id,
-                            "tray_id": tray_id,
-                            "material": spool.material,
-                            "cost": cost,
-                        }
-                    )
-
+                if not isinstance(current_remain, int) or current_remain < 0 or current_remain > 100:
                     logger.info(
-                        "[UsageTracker] Spool %d consumed %.1fg (%d%%) on printer %d AMS%d-T%d (AMS fallback, %s)",
-                        spool.id,
-                        weight_grams,
-                        delta_pct,
+                        "[UsageTracker] %s: invalid remain%% at completion (%s), skipping fallback for printer %d",
+                        tray_label,
+                        current_remain,
                         printer_id,
-                        ams_id,
-                        tray_id,
-                        status,
                     )
+                    continue
+
+                start_remain = session.tray_remain_start[key]
+                delta_pct = start_remain - current_remain
+
+                if delta_pct <= 0:
+                    continue  # No consumption or tray was refilled
+
+                spool_id = await _resolve_spool_id_for_tray(
+                    printer_id=printer_id,
+                    ams_id=assign_ams_id,
+                    tray_id=assign_tray_id,
+                    db=db,
+                    spool_assignments_snapshot=session.spool_assignments,
+                    print_started_at=session.started_at,
+                )
+                if spool_id is None:
+                    logger.info(
+                        "[UsageTracker] %s: no spool assigned, skipping fallback for printer %d",
+                        tray_label,
+                        printer_id,
+                    )
+                    continue
+
+                # Load spool
+                spool_result = await db.execute(select(Spool).where(Spool.id == spool_id))
+                spool = spool_result.scalar_one_or_none()
+                if not spool:
+                    continue
+
+                # Compute weight consumed
+                weight_grams = (delta_pct / 100.0) * spool.label_weight
+
+                # Update spool
+                spool.weight_used = (spool.weight_used or 0) + weight_grams
+                spool.last_used = datetime.now(timezone.utc)
+
+                # Calculate cost for this usage
+                cost = None
+                cost_per_kg = spool.cost_per_kg if spool.cost_per_kg is not None else default_filament_cost
+                if cost_per_kg > 0:
+                    cost = round((weight_grams / 1000.0) * cost_per_kg, 2)
+
+                # Insert usage history record
+                history = SpoolUsageHistory(
+                    spool_id=spool.id,
+                    printer_id=printer_id,
+                    print_name=session.print_name,
+                    weight_used=round(weight_grams, 1),
+                    percent_used=delta_pct,
+                    status=status,
+                    cost=cost,
+                    archive_id=archive_id,
+                )
+                db.add(history)
+
+                handled_trays.add(key)
+                results.append(
+                    {
+                        "spool_id": spool.id,
+                        "weight_used": round(weight_grams, 1),
+                        "percent_used": delta_pct,
+                        "ams_id": assign_ams_id,
+                        "tray_id": assign_tray_id,
+                        "material": spool.material,
+                        "cost": cost,
+                    }
+                )
+
+                logger.info(
+                    "[UsageTracker] Spool %d consumed %.1fg (%d%%) on printer %d %s (AMS fallback, %s)",
+                    spool.id,
+                    weight_grams,
+                    delta_pct,
+                    printer_id,
+                    tray_label,
+                    status,
+                )
 
     if results:
         await db.commit()
@@ -510,9 +587,144 @@ async def on_print_complete(
     return results
 
 
+async def _resolve_3mf_fallback(archive, db: AsyncSession, base_dir):
+    """Try to find a 3MF file from library or a previous archive when the current archive has none.
+
+    This handles fallback archives (FTP download failed) where the 3MF may already exist
+    locally from a library upload or a previous successful print of the same file.
+    """
+    from pathlib import Path
+
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.library import LibraryFile
+
+    # Derive search name from archive filename (e.g. "benchy.3mf" or "benchy.gcode.3mf")
+    search_name = archive.filename or archive.print_name
+    if not search_name:
+        return None
+    # Normalize: strip path parts, get base name
+    search_name = search_name.split("/")[-1]
+    search_base = search_name.replace(".gcode.3mf", "").replace(".gcode", "").replace(".3mf", "")
+    if not search_base:
+        return None
+
+    # 1. Try library files matching the name (match base name at file boundary)
+    try:
+        lib_result = await db.execute(
+            select(LibraryFile)
+            .where(LibraryFile.file_path.ilike(f"%/{search_base}.%") | LibraryFile.file_path.ilike(f"{search_base}.%"))
+            .where(LibraryFile.file_path.ilike("%.3mf"))
+            .order_by(LibraryFile.created_at.desc())
+            .limit(3)
+        )
+        for lib_file in lib_result.scalars().all():
+            lib_path = Path(lib_file.file_path)
+            candidate = lib_path if lib_path.is_absolute() else base_dir / lib_file.file_path
+            if candidate.exists() and candidate.suffix == ".3mf":
+                logger.info("[UsageTracker] 3MF fallback: found library file %s for archive %s", candidate, archive.id)
+                return candidate
+    except Exception as e:
+        logger.debug("[UsageTracker] 3MF fallback: library lookup failed: %s", e)
+
+    # 2. Try previous archives with the same filename that have a valid file_path
+    try:
+        prev_result = await db.execute(
+            select(PrintArchive)
+            .where(PrintArchive.id != archive.id)
+            .where(PrintArchive.printer_id == archive.printer_id)
+            .where(PrintArchive.file_path != "")
+            .where(PrintArchive.file_path.isnot(None))
+            .where(
+                PrintArchive.filename.ilike(f"%{search_base}.%") | PrintArchive.filename.ilike(f"{search_base}.%"),
+            )
+            .order_by(PrintArchive.created_at.desc())
+            .limit(3)
+        )
+        for prev_archive in prev_result.scalars().all():
+            candidate = base_dir / prev_archive.file_path
+            if candidate.exists() and candidate.suffix == ".3mf":
+                logger.info(
+                    "[UsageTracker] 3MF fallback: found previous archive %s file for archive %s",
+                    prev_archive.id,
+                    archive.id,
+                )
+                return candidate
+    except Exception as e:
+        logger.debug("[UsageTracker] 3MF fallback: previous archive lookup failed: %s", e)
+
+    return None
+
+
+async def _find_3mf_by_filename(
+    printer_id: int,
+    filename: str,
+    db: AsyncSession,
+    base_dir,
+):
+    """Find a 3MF file by filename from library or previous archives.
+
+    Used when auto-archive is disabled and there's no archive_id, but we still
+    need the 3MF slicer data for filament usage tracking.
+    """
+    from pathlib import Path
+
+    from backend.app.models.archive import PrintArchive
+    from backend.app.models.library import LibraryFile
+
+    search_name = filename.split("/")[-1] if "/" in filename else filename
+    search_base = search_name.replace(".gcode.3mf", "").replace(".gcode", "").replace(".3mf", "")
+    if not search_base:
+        return None
+
+    # 1. Try library files matching the name
+    try:
+        lib_result = await db.execute(
+            select(LibraryFile)
+            .where(LibraryFile.file_path.ilike(f"%/{search_base}.%") | LibraryFile.file_path.ilike(f"{search_base}.%"))
+            .where(LibraryFile.file_path.ilike("%.3mf"))
+            .order_by(LibraryFile.created_at.desc())
+            .limit(3)
+        )
+        for lib_file in lib_result.scalars().all():
+            lib_path = Path(lib_file.file_path)
+            candidate = lib_path if lib_path.is_absolute() else base_dir / lib_file.file_path
+            if candidate.exists() and candidate.suffix == ".3mf":
+                logger.info("[UsageTracker] 3MF (no-archive): found library file %s for '%s'", candidate, filename)
+                return candidate
+    except Exception as e:
+        logger.debug("[UsageTracker] 3MF (no-archive): library lookup failed: %s", e)
+
+    # 2. Try previous archives with a valid 3MF file_path
+    try:
+        prev_result = await db.execute(
+            select(PrintArchive)
+            .where(PrintArchive.printer_id == printer_id)
+            .where(PrintArchive.file_path != "")
+            .where(PrintArchive.file_path.isnot(None))
+            .where(
+                PrintArchive.filename.ilike(f"%{search_base}.%") | PrintArchive.filename.ilike(f"{search_base}.%"),
+            )
+            .order_by(PrintArchive.created_at.desc())
+            .limit(3)
+        )
+        for prev_archive in prev_result.scalars().all():
+            candidate = base_dir / prev_archive.file_path
+            if candidate.exists() and candidate.suffix == ".3mf":
+                logger.info(
+                    "[UsageTracker] 3MF (no-archive): found previous archive %s file for '%s'",
+                    prev_archive.id,
+                    filename,
+                )
+                return candidate
+    except Exception as e:
+        logger.debug("[UsageTracker] 3MF (no-archive): previous archive lookup failed: %s", e)
+
+    return None
+
+
 async def _track_from_3mf(
     printer_id: int,
-    archive_id: int,
+    archive_id: int | None,
     status: str,
     print_name: str,
     handled_trays: set[tuple[int, int]],
@@ -525,12 +737,16 @@ async def _track_from_3mf(
     default_filament_cost: float = 0.0,
     spool_assignments: dict[tuple[int, int], int] | None = None,
     print_started_at: datetime | None = None,
+    threemf_path=None,
 ) -> list[dict]:
     """Track usage from 3MF per-filament slicer data (primary path).
 
     Uses slicer-estimated filament weight for all spools (BL and non-BL).
     For partial prints (failed/aborted), tries per-layer gcode data first,
     then falls back to linear scaling by progress.
+
+    When archive_id is None (auto-archive disabled), a pre-resolved threemf_path
+    can be provided to still track filament usage from slicer data.
 
     Slot-to-tray mapping priority:
     1. Stored ams_mapping from print command (reprints/direct prints)
@@ -540,20 +756,34 @@ async def _track_from_3mf(
     5. Position-based default using sorted available tray IDs (handles external spools)
     6. Default mapping: slot_id - 1 = global_tray_id (last resort)
     """
+    from pathlib import Path
+
     from backend.app.core.config import settings as app_settings
     from backend.app.models.archive import PrintArchive
     from backend.app.models.print_queue import PrintQueueItem
     from backend.app.utils.threemf_tools import extract_filament_usage_from_3mf
 
-    result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
-    archive = result.scalar_one_or_none()
-    if not archive or not archive.file_path:
-        logger.info("[UsageTracker] 3MF: archive %s has no file_path, skipping", archive_id)
-        return []
+    file_path: Path | None = threemf_path
 
-    file_path = app_settings.base_dir / archive.file_path
-    if not file_path.exists():
-        logger.info("[UsageTracker] 3MF: file not found: %s", file_path)
+    if file_path is None and archive_id:
+        result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
+        archive = result.scalar_one_or_none()
+        if not archive:
+            logger.info("[UsageTracker] 3MF: archive %s not found, skipping", archive_id)
+            return []
+
+        # Try archive's own file_path first
+        if archive.file_path:
+            candidate = app_settings.base_dir / archive.file_path
+            if candidate.exists():
+                file_path = candidate
+
+        # Fallback: find 3MF from library or a previous archive with the same filename
+        if file_path is None:
+            file_path = await _resolve_3mf_fallback(archive, db, app_settings.base_dir)
+
+    if file_path is None:
+        logger.info("[UsageTracker] 3MF: no file available for archive %s, skipping", archive_id)
         return []
 
     filament_usage = extract_filament_usage_from_3mf(file_path)
@@ -583,7 +813,7 @@ async def _track_from_3mf(
                 mapping_source = "mqtt"
 
     # 3. Try queue item ams_mapping (queue-initiated prints store the exact mapping)
-    if not slot_to_tray:
+    if not slot_to_tray and archive_id:
         queue_result = await db.execute(
             select(PrintQueueItem)
             .where(PrintQueueItem.archive_id == archive_id)

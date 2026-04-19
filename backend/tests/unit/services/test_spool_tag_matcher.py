@@ -3,6 +3,7 @@
 import pytest
 from sqlalchemy import inspect
 
+from backend.app.models.color_catalog import ColorCatalogEntry
 from backend.app.models.spool import Spool
 from backend.app.models.spool_assignment import SpoolAssignment
 from backend.app.services.spool_tag_matcher import (
@@ -737,3 +738,185 @@ async def test_link_tag_preserves_existing_slicer_filament(db_session):
 
     assert spool.slicer_filament == "CUSTOM01"
     assert spool.slicer_filament_name == "My Custom PLA"
+
+
+# -- gradient / multi-color subtype detection --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_spool_gradient_from_tray_id_name(db_session):
+    """PLA Basic with M* color code → subtype='Gradient'."""
+    tray = {
+        **SAMPLE_TRAY,
+        "tray_sub_brands": "PLA Basic",
+        "tray_id_name": "A00-M2",  # Ocean to Meadow
+    }
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.material == "PLA"
+    assert spool.subtype == "Gradient"
+
+
+@pytest.mark.asyncio
+async def test_create_spool_dual_color_from_tray_id_name(db_session):
+    """PLA Silk with A05-M* color code → subtype='Dual Color'."""
+    tray = {
+        **SAMPLE_TRAY,
+        "tray_sub_brands": "PLA Silk",
+        "tray_id_name": "A05-M1",  # South Beach
+    }
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.material == "PLA"
+    assert spool.subtype == "Dual Color"
+
+
+@pytest.mark.asyncio
+async def test_create_spool_tri_color_from_tray_id_name(db_session):
+    """PLA Silk with A05-T* color code → subtype='Tri Color'."""
+    tray = {
+        **SAMPLE_TRAY,
+        "tray_sub_brands": "PLA Silk",
+        "tray_id_name": "A05-T3",  # Neon City
+    }
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.material == "PLA"
+    assert spool.subtype == "Tri Color"
+
+
+@pytest.mark.asyncio
+async def test_create_spool_silk_plus_subtype(db_session):
+    """PLA Silk+ preserves 'Silk+' subtype (no gradient override)."""
+    tray = {
+        **SAMPLE_TRAY,
+        "tray_sub_brands": "PLA Silk+",
+        "tray_id_name": "A06-D0",  # Titan Gray — D code, not M/T
+    }
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.material == "PLA"
+    assert spool.subtype == "Silk+"
+
+
+@pytest.mark.asyncio
+async def test_create_spool_standard_not_affected(db_session):
+    """Standard filaments with D/K/etc codes are not affected."""
+    tray = {
+        **SAMPLE_TRAY,
+        "tray_sub_brands": "PLA Basic",
+        "tray_id_name": "A00-D3",  # Dark Gray
+    }
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.material == "PLA"
+    assert spool.subtype == "Basic"
+
+
+# -- color resolution (#857) -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_color_resolves_from_catalog_not_suffix_fallback(db_session):
+    """Regression for #857 — A17-R1 (PLA Translucent Cherry Pink) must NOT resolve
+    to 'Scarlet Red' just because 'R1' also appears in PLA Matte.
+
+    The old resolver fell back to a suffix lookup table when the exact tray_id_name
+    wasn't mapped, which produced wrong names across material families. Cross-family
+    suffix codes are not globally unique, so only the catalog hex lookup is safe.
+    """
+    # Seed the catalog with the entry that the Cherry Pink hex should hit.
+    db_session.add(
+        ColorCatalogEntry(
+            manufacturer="Bambu Lab",
+            color_name="Cherry Pink",
+            hex_color="#F5B6CD",
+            material="PLA Translucent",
+            is_default=True,
+        )
+    )
+    await db_session.flush()
+
+    tray = {
+        **SAMPLE_TRAY,
+        "tray_type": "PLA",
+        "tray_sub_brands": "PLA Translucent",
+        "tray_color": "F5B6CDFF",
+        "tray_id_name": "A17-R1",
+    }
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.color_name == "Cherry Pink"
+
+
+@pytest.mark.asyncio
+async def test_color_name_is_none_when_catalog_miss_and_code_unreadable(db_session):
+    """When the hex isn't in the catalog and tray_id_name is a code ('X##-Y#'),
+    color_name must stay None rather than falling through to a wrong suffix match.
+    A missing name is preferable to a confidently-wrong one.
+    """
+    tray = {
+        **SAMPLE_TRAY,
+        "tray_type": "PLA",
+        "tray_sub_brands": "PLA Translucent",
+        "tray_color": "F5B6CDFF",  # not seeded
+        "tray_id_name": "A17-R1",
+    }
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.color_name is None
+
+
+@pytest.mark.asyncio
+async def test_color_name_falls_back_to_readable_tray_id_name(db_session):
+    """If tray_id_name is a human-readable label (no code pattern), use it when the
+    catalog has no entry for the hex. Preserves behavior for third-party spools whose
+    firmware puts a readable string in tray_id_name instead of a Bambu code.
+    """
+    tray = {
+        **SAMPLE_TRAY,
+        "tray_color": "123456FF",  # not in catalog
+        "tray_id_name": "Custom Purple",  # no '-', readable
+    }
+    spool = await create_spool_from_tray(db_session, tray)
+    assert spool.color_name == "Custom Purple"
+
+
+@pytest.mark.asyncio
+async def test_find_matching_untagged_gradient_spool(db_session):
+    """find_matching_untagged_spool matches gradient subtype from tray_id_name."""
+    spool = Spool(
+        material="PLA",
+        subtype="Gradient",
+        rgba="FFFFFFFF",
+        brand="Bambu Lab",
+        label_weight=1000,
+        core_weight=250,
+    )
+    db_session.add(spool)
+    await db_session.commit()
+
+    tray = {
+        **SAMPLE_TRAY,
+        "tray_sub_brands": "PLA Basic",
+        "tray_id_name": "A00-M2",
+    }
+    found = await find_matching_untagged_spool(db_session, tray)
+    assert found is not None
+    assert found.id == spool.id
+
+
+@pytest.mark.asyncio
+async def test_find_matching_untagged_gradient_no_match_basic(db_session):
+    """A 'Basic' spool does NOT match a Gradient tray (different subtype)."""
+    spool = Spool(
+        material="PLA",
+        subtype="Basic",
+        rgba="FFFFFFFF",
+        brand="Bambu Lab",
+        label_weight=1000,
+        core_weight=250,
+    )
+    db_session.add(spool)
+    await db_session.commit()
+
+    tray = {
+        **SAMPLE_TRAY,
+        "tray_sub_brands": "PLA Basic",
+        "tray_id_name": "A00-M2",  # Gradient
+    }
+    found = await find_matching_untagged_spool(db_session, tray)
+    assert found is None

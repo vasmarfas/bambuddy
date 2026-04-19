@@ -93,17 +93,39 @@ class PrintScheduler:
     async def check_queue(self):
         """Check for prints ready to start."""
         async with async_session() as db:
-            # Get all pending items, ordered by printer and position
-            result = await db.execute(
-                select(PrintQueueItem)
-                .where(PrintQueueItem.status == "pending")
-                .order_by(PrintQueueItem.printer_id, PrintQueueItem.position)
-            )
+            # Check if shortest-job-first scheduling is enabled
+            sjf_enabled = await self._get_bool_setting(db, "queue_shortest_first")
+
+            # Get all pending items, ordered by printer and position (or SJF order)
+            if sjf_enabled:
+                # SJF: group by printer (and target_model for model-based jobs),
+                # then items already jumped get top priority (starvation guard),
+                # then sort by print_time ascending. Items with no print time go last.
+                result = await db.execute(
+                    select(PrintQueueItem)
+                    .where(PrintQueueItem.status == "pending")
+                    .order_by(
+                        PrintQueueItem.printer_id,
+                        PrintQueueItem.target_model,
+                        PrintQueueItem.been_jumped.desc(),
+                        PrintQueueItem.print_time_seconds.asc().nullslast(),
+                        PrintQueueItem.position,
+                    )
+                )
+            else:
+                result = await db.execute(
+                    select(PrintQueueItem)
+                    .where(PrintQueueItem.status == "pending")
+                    .order_by(PrintQueueItem.printer_id, PrintQueueItem.position)
+                )
             items = list(result.scalars().all())
+
+            # Read plate-clear setting once per queue check
+            require_plate_clear = await self._get_bool_setting(db, "require_plate_clear", default=True)
 
             if not items:
                 # No pending items — still check auto-drying on idle printers
-                await self._check_auto_drying(db, [], set())
+                await self._check_auto_drying(db, [], set(), require_plate_clear=require_plate_clear)
                 return
 
             logger.info(
@@ -139,18 +161,30 @@ class PrintScheduler:
                         continue
 
                     # Check if printer is idle
-                    printer_idle = self._is_printer_idle(item.printer_id)
+                    printer_idle = self._is_printer_idle(item.printer_id, require_plate_clear)
                     printer_connected = printer_manager.is_connected(item.printer_id)
 
                     # If printer not connected, try to power on via smart plug
                     if not printer_connected:
-                        plug = await self._get_smart_plug(db, item.printer_id)
-                        if plug and plug.auto_on and plug.enabled:
-                            logger.info("Printer %s offline, attempting to power on via smart plug", item.printer_id)
-                            powered_on = await self._power_on_and_wait(plug, item.printer_id, db)
+                        plugs = await self._get_smart_plugs(db, item.printer_id)
+                        auto_on_plugs = [p for p in plugs if p.auto_on and p.enabled]
+                        if auto_on_plugs:
+                            logger.info("Printer %s offline, attempting to power on via smart plug(s)", item.printer_id)
+                            # Power on using the first auto_on plug (the printer power plug)
+                            powered_on = await self._power_on_and_wait(auto_on_plugs[0], item.printer_id, db)
                             if powered_on:
+                                # Also turn on any remaining auto_on plugs (e.g., filter)
+                                for extra_plug in auto_on_plugs[1:]:
+                                    try:
+                                        service = await smart_plug_manager.get_service_for_plug(extra_plug, db)
+                                        await service.turn_on(extra_plug)
+                                        logger.info(
+                                            "Also powered on plug '%s' for printer %s", extra_plug.name, item.printer_id
+                                        )
+                                    except Exception as e:
+                                        logger.warning("Failed to power on extra plug '%s': %s", extra_plug.name, e)
                                 printer_connected = True
-                                printer_idle = self._is_printer_idle(item.printer_id)
+                                printer_idle = self._is_printer_idle(item.printer_id, require_plate_clear)
                             else:
                                 logger.warning("Could not power on printer %s via smart plug", item.printer_id)
                                 busy_printers.add(item.printer_id)
@@ -173,7 +207,7 @@ class PrintScheduler:
                                 # Print takes priority — stop drying
                                 await self._stop_drying(item.printer_id)
                                 # Re-check idle after stopping drying
-                                printer_idle = self._is_printer_idle(item.printer_id)
+                                printer_idle = self._is_printer_idle(item.printer_id, require_plate_clear)
                                 if not printer_idle:
                                     busy_printers.add(item.printer_id)
                                     continue
@@ -216,6 +250,23 @@ class PrintScheduler:
                     await self._start_print(db, item)
                     busy_printers.add(item.printer_id)
 
+                    # SJF starvation guard: mark items that were jumped
+                    if sjf_enabled and item.print_time_seconds is not None:
+                        for other in items:
+                            if (
+                                other.id != item.id
+                                and other.status == "pending"
+                                and other.printer_id == item.printer_id
+                                and not other.been_jumped
+                                and other.position < item.position
+                                and (
+                                    other.print_time_seconds is None
+                                    or other.print_time_seconds > item.print_time_seconds
+                                )
+                            ):
+                                other.been_jumped = True
+                        await db.commit()
+
                 elif item.target_model:
                     # Model-based assignment - find any idle printer of matching model
                     # Parse required filament types if present
@@ -249,6 +300,7 @@ class PrintScheduler:
                         effective_types,
                         item.target_location,
                         filament_overrides=filament_overrides,
+                        require_plate_clear=require_plate_clear,
                     )
 
                     # Update waiting_reason if changed and send notification when first waiting
@@ -320,6 +372,25 @@ class PrintScheduler:
                         await self._start_print(db, item)
                         busy_printers.add(printer_id)
 
+                        # SJF starvation guard: mark model-based items that were jumped
+                        if sjf_enabled and item.print_time_seconds is not None:
+                            for other in items:
+                                if (
+                                    other.id != item.id
+                                    and other.status == "pending"
+                                    and other.printer_id is None
+                                    and other.target_model
+                                    and other.target_model.upper() == item.target_model.upper()
+                                    and not other.been_jumped
+                                    and other.position < item.position
+                                    and (
+                                        other.print_time_seconds is None
+                                        or other.print_time_seconds > item.print_time_seconds
+                                    )
+                                ):
+                                    other.been_jumped = True
+                            await db.commit()
+
             # Log summary of skip reasons (helps diagnose why queue items aren't starting)
             if skip_reasons:
                 logger.info("Queue skip summary: %s", skip_reasons)
@@ -328,18 +399,18 @@ class PrintScheduler:
                 for pid in busy_printers:
                     state = printer_manager.get_status(pid)
                     connected = printer_manager.is_connected(pid)
-                    plate_cleared = printer_manager.is_plate_cleared(pid)
+                    awaiting = printer_manager.is_awaiting_plate_clear(pid)
                     state_name = state.state if state else "NO_STATUS"
                     logger.info(
-                        "Queue: printer %d not available — connected=%s, state=%s, plate_cleared=%s",
+                        "Queue: printer %d not available — connected=%s, state=%s, awaiting_plate_clear=%s",
                         pid,
                         connected,
                         state_name,
-                        plate_cleared,
+                        awaiting,
                     )
 
             # Auto-drying: start drying on idle printers that have no pending queue items
-            await self._check_auto_drying(db, items, busy_printers)
+            await self._check_auto_drying(db, items, busy_printers, require_plate_clear=require_plate_clear)
 
     async def _find_idle_printer_for_model(
         self,
@@ -349,6 +420,7 @@ class PrintScheduler:
         required_filament_types: list[str] | None = None,
         target_location: str | None = None,
         filament_overrides: list[dict] | None = None,
+        require_plate_clear: bool = True,
     ) -> tuple[int | None, str | None]:
         """Find an idle, connected printer matching the model with compatible filaments.
 
@@ -413,7 +485,7 @@ class PrintScheduler:
                 continue
 
             is_connected = printer_manager.is_connected(printer.id)
-            is_idle = self._is_printer_idle(printer.id) if is_connected else False
+            is_idle = self._is_printer_idle(printer.id, require_plate_clear) if is_connected else False
 
             if not is_connected:
                 printers_offline.append(printer.name)
@@ -698,8 +770,11 @@ class PrintScheduler:
             logger.debug("No filaments loaded on printer %s", printer_id)
             return None
 
+        # Check if user prefers lowest remaining filament when multiple spools match
+        prefer_lowest = await self._get_bool_setting(db, "prefer_lowest_filament")
+
         # Compute mapping: match required filaments to available slots
-        return self._match_filaments_to_slots(filament_reqs, loaded_filaments)
+        return self._match_filaments_to_slots(filament_reqs, loaded_filaments, prefer_lowest)
 
     async def _get_filament_requirements(self, db: AsyncSession, item: PrintQueueItem) -> list[dict] | None:
         """Extract filament requirements from the source 3MF file.
@@ -851,6 +926,7 @@ class PrintScheduler:
                             "is_external": False,
                             "global_tray_id": global_tray_id,
                             "extruder_id": ams_extruder_map.get(str(ams_id)),
+                            "remain": tray.get("remain", -1),
                         }
                     )
 
@@ -870,6 +946,7 @@ class PrintScheduler:
                         "is_external": True,
                         "global_tray_id": tray_id,
                         "extruder_id": (255 - tray_id) if ams_extruder_map else None,
+                        "remain": vt.get("remain", -1),
                     }
                 )
 
@@ -906,7 +983,9 @@ class PrintScheduler:
         except ValueError:
             return False
 
-    def _match_filaments_to_slots(self, required: list[dict], loaded: list[dict]) -> list[int] | None:
+    def _match_filaments_to_slots(
+        self, required: list[dict], loaded: list[dict], prefer_lowest: bool = False
+    ) -> list[int] | None:
         """Match required filaments to loaded filaments and build AMS mapping.
 
         Priority: unique tray_info_idx match > exact color match > similar color match > type-only match
@@ -952,6 +1031,10 @@ class PrintScheduler:
             if req_nozzle_id is not None:
                 available = [f for f in available if f.get("extruder_id") == req_nozzle_id]
 
+            # Sort by remaining filament (ascending) so lowest-remain spool wins .find()
+            if prefer_lowest:
+                available.sort(key=lambda f: f.get("remain", -1) if f.get("remain", -1) >= 0 else 101)
+
             # Check if tray_info_idx is unique among available trays
             if req_tray_info_idx:
                 idx_matches = [f for f in available if f.get("tray_info_idx") == req_tray_info_idx]
@@ -968,6 +1051,8 @@ class PrintScheduler:
                         f"Non-unique tray_info_idx={req_tray_info_idx} found in {len(idx_matches)} trays, "
                         f"using color matching among trays: {[f['global_tray_id'] for f in idx_matches]}"
                     )
+                    if prefer_lowest:
+                        idx_matches.sort(key=lambda f: f.get("remain", -1) if f.get("remain", -1) >= 0 else 101)
                     # Use color matching within this subset
                     for f in idx_matches:
                         f_color = f.get("color", "")
@@ -1021,7 +1106,7 @@ class PrintScheduler:
 
         return mapping
 
-    def _is_printer_idle(self, printer_id: int) -> bool:
+    def _is_printer_idle(self, printer_id: int, require_plate_clear: bool = True) -> bool:
         """Check if a printer is connected and idle."""
         if not printer_manager.is_connected(printer_id):
             logger.debug("Printer %d: not connected", printer_id)
@@ -1032,19 +1117,29 @@ class PrintScheduler:
             logger.debug("Printer %d: no status available", printer_id)
             return False
 
-        # IDLE = ready for next print
-        # FINISH/FAILED = ready only if user confirmed plate is cleared
-        idle = state.state == "IDLE" or (
-            state.state in ("FINISH", "FAILED") and printer_manager.is_plate_cleared(printer_id)
-        )
-        if not idle:
+        # Plate-clear gate: if the printer finished/failed a previous print and the user
+        # hasn't acknowledged the plate was cleared, the queue must not dispatch the next
+        # job — even if the printer currently reports IDLE. After Auto Off cycles the
+        # printer, it boots back into IDLE with no memory of the previous finish; without
+        # the persisted awaiting flag we'd bypass the confirmation prompt (#961).
+        if require_plate_clear and printer_manager.is_awaiting_plate_clear(printer_id):
             logger.debug(
-                "Printer %d: not idle — state=%s, plate_cleared=%s",
+                "Printer %d: not idle — awaiting plate-clear acknowledgment (state=%s)",
                 printer_id,
                 state.state,
-                printer_manager.is_plate_cleared(printer_id),
             )
+            return False
+
+        idle = state.state in ("IDLE", "FINISH", "FAILED")
+        if not idle:
+            logger.debug("Printer %d: not idle — state=%s", printer_id, state.state)
         return idle
+
+    async def _get_setting(self, db: AsyncSession, key: str) -> str | None:
+        """Read a setting value from the database."""
+        result = await db.execute(select(Settings).where(Settings.key == key))
+        setting = result.scalar_one_or_none()
+        return setting.value if setting else None
 
     async def _get_bool_setting(self, db: AsyncSession, key: str, default: bool = False) -> bool:
         """Read a boolean setting from the database."""
@@ -1106,7 +1201,14 @@ class PrintScheduler:
             return None
         return (min_temp, max_hours or 12, filament_type)
 
-    async def _check_auto_drying(self, db: AsyncSession, queue_items: list[PrintQueueItem], busy_printers: set[int]):
+    async def _check_auto_drying(
+        self,
+        db: AsyncSession,
+        queue_items: list[PrintQueueItem],
+        busy_printers: set[int],
+        *,
+        require_plate_clear: bool = True,
+    ):
         """Start drying on idle printers based on humidity.
 
         Two modes (can both be enabled):
@@ -1175,7 +1277,7 @@ class PrintScheduler:
             if not printer_manager.is_connected(pid):
                 logger.debug("Auto-drying: printer %d skipped — not connected", pid)
                 continue
-            if not self._is_printer_idle(pid):
+            if not self._is_printer_idle(pid, require_plate_clear):
                 logger.debug("Auto-drying: printer %d skipped — not idle", pid)
                 continue
 
@@ -1338,10 +1440,10 @@ class PrintScheduler:
                 printer_manager.send_drying_command(printer_id, ams_id, 0, 0, mode=0)
         self._drying_in_progress.pop(printer_id, None)
 
-    async def _get_smart_plug(self, db: AsyncSession, printer_id: int) -> SmartPlug | None:
-        """Get the smart plug associated with a printer."""
+    async def _get_smart_plugs(self, db: AsyncSession, printer_id: int) -> list[SmartPlug]:
+        """Get all smart plugs associated with a printer."""
         result = await db.execute(select(SmartPlug).where(SmartPlug.printer_id == printer_id))
-        return result.scalar_one_or_none()
+        return list(result.scalars().all())
 
     async def _power_on_and_wait(self, plug: SmartPlug, printer_id: int, db: AsyncSession) -> bool:
         """Turn on smart plug and wait for printer to connect.
@@ -1422,14 +1524,26 @@ class PrintScheduler:
         if not item.auto_off_after:
             return
 
-        plug = await self._get_smart_plug(db, item.printer_id)
-        if plug and plug.enabled:
+        plugs = await self._get_smart_plugs(db, item.printer_id)
+        plug_ids = [p.id for p in plugs if p.enabled]
+        if plug_ids:
             logger.info("Auto-off: Waiting for printer %s to cool down before power off...", item.printer_id)
             # Wait for cooldown (up to 10 minutes)
             await printer_manager.wait_for_cooldown(item.printer_id, target_temp=50.0, timeout=600)
-            logger.info("Auto-off: Powering off printer %s", item.printer_id)
-            service = await smart_plug_manager.get_service_for_plug(plug, db)
-            await service.turn_off(plug)
+            # Re-fetch plugs in a fresh session after the long cooldown wait
+            async with async_session() as new_db:
+                for plug_id in plug_ids:
+                    try:
+                        result = await new_db.execute(select(SmartPlug).where(SmartPlug.id == plug_id))
+                        plug = result.scalar_one_or_none()
+                        if plug and plug.enabled:
+                            logger.info("Auto-off: Powering off plug '%s' for printer %s", plug.name, item.printer_id)
+                            service = await smart_plug_manager.get_service_for_plug(plug, new_db)
+                            await service.turn_off(plug)
+                    except Exception as e:
+                        logger.warning(
+                            "Auto-off: Failed to power off plug %s for printer %s: %s", plug_id, item.printer_id, e
+                        )
 
     async def _get_job_name(self, db: AsyncSession, item: PrintQueueItem) -> str:
         """Get a human-readable name for a queue item."""
@@ -1530,6 +1644,7 @@ class PrintScheduler:
                     source_file=file_path,
                     original_filename=filename,
                     created_by_id=item.created_by_id,
+                    project_id=item.project_id,
                 )
                 if archive:
                     item.archive_id = archive.id
@@ -1562,6 +1677,32 @@ class PrintScheduler:
             logger.error("Queue item %s: File not found: %s", item.id, file_path)
             await self._power_off_if_needed(db, item)
             return
+
+        # G-code injection for auto-print systems (#422)
+        injected_path = None
+        if item.gcode_injection:
+            try:
+                snippets_raw = await self._get_setting(db, "gcode_snippets")
+                if snippets_raw:
+                    snippets = json.loads(snippets_raw)
+                    model_snippets = snippets.get(printer.model, {})
+                    start_gc = (model_snippets.get("start_gcode") or "").strip()
+                    end_gc = (model_snippets.get("end_gcode") or "").strip()
+                    if start_gc or end_gc:
+                        from backend.app.utils.threemf_tools import inject_gcode_into_3mf
+
+                        injected_path = inject_gcode_into_3mf(
+                            file_path, item.plate_id or 1, start_gc or None, end_gc or None
+                        )
+                        if injected_path:
+                            file_path = injected_path
+                            logger.info("Queue item %s: G-code injected for model %s", item.id, printer.model)
+                        else:
+                            logger.warning(
+                                "Queue item %s: G-code injection returned no result, using original", item.id
+                            )
+            except Exception as e:
+                logger.warning("Queue item %s: G-code injection failed, using original: %s", item.id, e)
 
         # Upload file to printer via FTP
         # Use a clean filename to avoid issues with double extensions like .gcode.3mf
@@ -1627,6 +1768,10 @@ class PrintScheduler:
             uploaded = False
             logger.error("Queue item %s: FTP error: %s (type: %s)", item.id, e, type(e).__name__)
 
+        # Clean up injected temp file after upload attempt
+        if injected_path and injected_path.exists():
+            injected_path.unlink(missing_ok=True)
+
         if not uploaded:
             error_msg = (
                 "Failed to upload file to printer. Check if SD card is inserted and properly formatted (FAT32/exFAT). "
@@ -1683,9 +1828,14 @@ class PrintScheduler:
         item.started_at = datetime.now(timezone.utc)
         await db.commit()
 
-        # Consume the plate-cleared flag now that we're starting a print
-        printer_manager.consume_plate_cleared(item.printer_id)
+        # Clear the awaiting-plate-clear flag now that we're starting a new print
+        printer_manager.set_awaiting_plate_clear(item.printer_id, False)
         logger.info("Queue item %s: Status set to 'printing', sending print command...", item.id)
+
+        # Capture state before dispatch so the watchdog can detect whether the
+        # printer actually transitioned (#967).
+        pre_status = printer_manager.get_status(item.printer_id)
+        pre_state = getattr(pre_status, "state", None) if pre_status else None
 
         # Start the print with AMS mapping, plate_id and print options
         started = printer_manager.start_print(
@@ -1703,6 +1853,13 @@ class PrintScheduler:
 
         if started:
             logger.info("Queue item %s: Print started successfully - %s", item.id, filename)
+
+            # Watchdog: if the printer never transitions out of pre_state, the MQTT
+            # publish was accepted locally but didn't reach the printer (half-broken
+            # session — same shape as #887/#936). Revert the queue item so the next
+            # dispatch can pick it up instead of leaving it stuck in "printing" (#967).
+            if pre_state:
+                asyncio.create_task(self._watchdog_print_start(item.id, item.printer_id, pre_state))
 
             # Get estimated time for notification
             estimated_time = None
@@ -1767,6 +1924,55 @@ class PrintScheduler:
             )
 
             await self._power_off_if_needed(db, item)
+
+    @staticmethod
+    async def _watchdog_print_start(
+        queue_item_id: int,
+        printer_id: int,
+        pre_state: str,
+        timeout: float = 45.0,
+        poll_interval: float = 3.0,
+    ) -> None:
+        """Revert a queue item if the printer never acknowledges the start command.
+
+        Bambuddy optimistically marks the queue item as "printing" right after the
+        MQTT project_file publish succeeds locally. If the printer drops/ignores the
+        command (half-broken MQTT session — #887/#936), the state never transitions
+        and the item would otherwise stay stuck in "printing" forever (#967).
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            await asyncio.sleep(poll_interval)
+            status = printer_manager.get_status(printer_id)
+            if not status:
+                return  # Printer disconnected — don't mess with the DB
+            if status.state != pre_state:
+                return  # Printer picked up the job
+
+        # No transition. Revert the item so the scheduler can retry.
+        async with async_session() as db:
+            item = await db.get(PrintQueueItem, queue_item_id)
+            if not item or item.status != "printing":
+                return  # Already moved on (completed/cancelled/etc.)
+            item.status = "pending"
+            item.started_at = None
+            await db.commit()
+            logger.warning(
+                "Queue item %s: printer %d did not respond to print command within "
+                "%.0fs (state still %s) — reverted to 'pending' for retry (#967)",
+                queue_item_id,
+                printer_id,
+                timeout,
+                pre_state,
+            )
+
+        # Same half-broken-session recovery as background_dispatch: force the
+        # MQTT client to reconnect so the next dispatch lands without a power cycle.
+        client = printer_manager.get_client(printer_id)
+        if client and hasattr(client, "force_reconnect_stale_session"):
+            client.force_reconnect_stale_session(
+                f"queue print command unacknowledged after {timeout:.0f}s (state still {pre_state})"
+            )
 
 
 # Global scheduler instance

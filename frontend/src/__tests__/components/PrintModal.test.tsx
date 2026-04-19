@@ -30,6 +30,7 @@ const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueu
   scheduled_time: null,
   require_previous_success: false,
   auto_off_after: false,
+  gcode_injection: false,
   manual_start: false,
   ams_mapping: null,
   plate_id: null,
@@ -48,6 +49,8 @@ const createMockQueueItem = (overrides: Partial<PrintQueueItem> = {}): PrintQueu
   archive_thumbnail: null,
   printer_name: 'Test Printer',
   print_time_seconds: 3600,
+  batch_id: null,
+  batch_name: null,
   ...overrides,
 });
 
@@ -713,6 +716,183 @@ describe('PrintModal', () => {
     });
   });
 
+  describe('stagger start', () => {
+    it('does not show stagger option with single printer in queue mode', async () => {
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          archiveId={1}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+
+      // Select single printer
+      await user.click(screen.getByText('X1 Carbon'));
+
+      expect(screen.queryByText('Stagger printer starts')).not.toBeInTheDocument();
+    });
+
+    it('shows stagger option when multiple printers selected in queue mode', async () => {
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          archiveId={1}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Select all')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Select all'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Stagger printer starts')).toBeInTheDocument();
+      });
+    });
+
+    it('shows stagger option in reprint mode with multiple printers', async () => {
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="reprint"
+          archiveId={1}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Select all')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Select all'));
+
+      await waitFor(() => {
+        expect(screen.getByText(/2 printers selected|3 printers selected/)).toBeInTheDocument();
+      });
+
+      expect(screen.getByText('Stagger printer starts')).toBeInTheDocument();
+    });
+
+    it('shows stagger preview in reprint mode when enabled', async () => {
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="reprint"
+          archiveId={1}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Select all')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Select all'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Stagger printer starts')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByLabelText('Stagger printer starts'));
+
+      await waitFor(() => {
+        // Default: 3 printers, group size 2 = 2 groups — preview text shown
+        expect(screen.getByText(/3 printers.*2 groups/)).toBeInTheDocument();
+      });
+    });
+
+    it('does not show stagger option in reprint mode with single printer', async () => {
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="reprint"
+          archiveId={1}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('X1 Carbon')).toBeInTheDocument();
+      });
+
+      // Select only one printer
+      await user.click(screen.getByText('X1 Carbon'));
+
+      expect(screen.queryByText('Stagger printer starts')).not.toBeInTheDocument();
+    });
+
+    it('shows stagger inputs when stagger checkbox is enabled', async () => {
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          archiveId={1}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Select all')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Select all'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Stagger printer starts')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByLabelText('Stagger printer starts'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Group size')).toBeInTheDocument();
+        expect(screen.getByText('Interval (min)')).toBeInTheDocument();
+      });
+    });
+
+    it('shows stagger preview with printer count', async () => {
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          archiveId={1}
+          archiveName="Test Print"
+          onClose={mockOnClose}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Select all')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Select all'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Stagger printer starts')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByLabelText('Stagger printer starts'));
+
+      await waitFor(() => {
+        // Default: 3 printers, group size 2 = 2 groups — preview text includes printer count
+        expect(screen.getByText(/3 printers.*2 groups/)).toBeInTheDocument();
+      });
+    });
+  });
+
   describe('multi-plate selection', () => {
     const multiPlateResponse = {
       is_multi_plate: true,
@@ -878,6 +1058,190 @@ describe('PrintModal', () => {
       expect((queueRequests[0] as { plate_id: number }).plate_id).toBe(1);
       expect((queueRequests[1] as { plate_id: number }).plate_id).toBe(2);
       expect((queueRequests[2] as { plate_id: number }).plate_id).toBe(3);
+    });
+  });
+
+  describe('batch quantity', () => {
+    it('shows quantity input in reprint mode', () => {
+      render(
+        <PrintModal
+          mode="reprint"
+          archiveId={1}
+          archiveName="Benchy"
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      expect(screen.getByLabelText('Quantity')).toBeInTheDocument();
+    });
+
+    it('shows quantity input in add-to-queue mode', () => {
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          archiveId={1}
+          archiveName="Benchy"
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      expect(screen.getByLabelText('Quantity')).toBeInTheDocument();
+    });
+
+    it('does not show quantity input in edit-queue-item mode', () => {
+      render(
+        <PrintModal
+          mode="edit-queue-item"
+          archiveId={1}
+          archiveName="Benchy"
+          queueItem={createMockQueueItem()}
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      expect(screen.queryByLabelText('Quantity')).not.toBeInTheDocument();
+    });
+
+    it('defaults quantity to 1', () => {
+      render(
+        <PrintModal
+          mode="add-to-queue"
+          archiveId={1}
+          archiveName="Benchy"
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      const input = screen.getByLabelText('Quantity') as HTMLInputElement;
+      expect(input.value).toBe('1');
+    });
+
+    it('quantity input has default value of 1 and accepts changes', async () => {
+      const user = userEvent.setup();
+      render(
+        <PrintModal
+          mode="reprint"
+          archiveId={1}
+          archiveName="Benchy"
+          initialSelectedPrinterIds={[1]}
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      const input = screen.getByLabelText('Quantity') as HTMLInputElement;
+      expect(input.value).toBe('1');
+
+      await user.tripleClick(input);
+      await user.keyboard('5');
+      expect(input.value).toBe('5');
+    });
+  });
+
+  describe('project_id forwarding', () => {
+    beforeEach(() => {
+      // Additional handlers needed for library file mode
+      server.use(
+        http.get('/api/v1/library/files/:id', () => {
+          return HttpResponse.json({
+            id: 5,
+            filename: 'benchy.gcode.3mf',
+            print_name: null,
+            file_type: '3mf',
+            folder_id: null,
+            project_id: null,
+            file_hash: null,
+            file_size_bytes: 1024,
+            thumbnail_path: null,
+            created_at: '2024-01-01T00:00:00Z',
+            updated_at: '2024-01-01T00:00:00Z',
+          });
+        }),
+        http.get('/api/v1/library/files/:id/plates', () => {
+          return HttpResponse.json({ is_multi_plate: false, plates: [] });
+        }),
+        http.get('/api/v1/library/files/:id/filament-requirements', () => {
+          return HttpResponse.json({ file_id: 5, filename: 'benchy.gcode.3mf', filaments: [] });
+        }),
+        http.get('/api/v1/printers/:id/status', () => {
+          return HttpResponse.json({ connected: true, state: 'IDLE', ams: [], vt_tray: [] });
+        }),
+      );
+    });
+
+    it('includes project_id in printLibraryFile call when projectId prop is set', async () => {
+      let capturedBody: Record<string, unknown> | null = null;
+      server.use(
+        http.post('/api/v1/library/files/:id/print', async ({ request }) => {
+          capturedBody = await request.json() as Record<string, unknown>;
+          return HttpResponse.json({ status: 'dispatched', dispatch_job_id: 'abc', dispatch_position: 0 });
+        })
+      );
+      const user = userEvent.setup();
+
+      render(
+        <PrintModal
+          mode="reprint"
+          libraryFileId={5}
+          archiveName="Benchy"
+          projectId={42}
+          initialSelectedPrinterIds={[1]}
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      // Wait for the modal to load printer and file data
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /^print$/i })).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByRole('button', { name: /^print$/i }));
+
+      await waitFor(() => {
+        expect(capturedBody).not.toBeNull();
+        expect(capturedBody?.project_id).toBe(42);
+      });
+    });
+
+    it('does NOT include project_id in reprintArchive call (archives carry their own project association)', async () => {
+      // The reprintArchive branch omits project_id by design — archives already carry
+      // their project association from the original print. This test guards that intent.
+      let capturedBody: Record<string, unknown> | null = null;
+      server.use(
+        http.post('/api/v1/archives/:id/reprint', async ({ request }) => {
+          capturedBody = await request.json() as Record<string, unknown>;
+          return HttpResponse.json({ status: 'dispatched' });
+        })
+      );
+      const user = userEvent.setup();
+
+      render(
+        <PrintModal
+          mode="reprint"
+          archiveId={1}
+          archiveName="Benchy"
+          projectId={42}
+          initialSelectedPrinterIds={[1]}
+          onClose={mockOnClose}
+          onSuccess={mockOnSuccess}
+        />
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /^print$/i })).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByRole('button', { name: /^print$/i }));
+
+      await waitFor(() => {
+        expect(capturedBody).not.toBeNull();
+        expect(capturedBody).not.toHaveProperty('project_id');
+      });
     });
   });
 });

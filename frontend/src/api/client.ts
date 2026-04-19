@@ -3,19 +3,46 @@ import type { ArchivePlatesResponse, LibraryFilePlatesResponse } from '../types/
 const API_BASE = '/api/v1';
 
 // Auth token storage
-let authToken: string | null = localStorage.getItem('auth_token');
+// By default tokens are stored in sessionStorage (tab-scoped, cleared on close).
+// When the token originates from the ?token= URL param (kiosk bootstrap), it is
+// additionally persisted in localStorage so the kiosk survives page reloads.
+let authToken: string | null =
+  sessionStorage.getItem('auth_token') ?? localStorage.getItem('auth_token');
 
-export function setAuthToken(token: string | null) {
+export function setAuthToken(token: string | null, persist = false) {
   authToken = token;
   if (token) {
-    localStorage.setItem('auth_token', token);
+    sessionStorage.setItem('auth_token', token);
+    if (persist) {
+      localStorage.setItem('auth_token', token);
+    }
   } else {
+    sessionStorage.removeItem('auth_token');
     localStorage.removeItem('auth_token');
   }
 }
 
 export function getAuthToken(): string | null {
   return authToken;
+}
+
+// Stream token for image/video URLs loaded via <img>/<video> tags
+// (these can't send Authorization headers, so a query param token is used)
+let streamToken: string | null = null;
+
+export function setStreamToken(token: string | null) {
+  streamToken = token;
+}
+
+export function getStreamToken(): string | null {
+  return streamToken;
+}
+
+/** Append the stream token to a URL if available (for <img>/<video> src). */
+export function withStreamToken(url: string): string {
+  if (!streamToken) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}token=${encodeURIComponent(streamToken)}`;
 }
 
 function parseContentDispositionFilename(header: string | null): string | null {
@@ -47,6 +74,7 @@ async function request<T>(
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
     cache: 'no-store', // Prevent browser caching of API responses
+    credentials: 'include', // Required for HttpOnly cookies (e.g. 2fa_challenge)
     headers,
   });
 
@@ -216,12 +244,12 @@ export interface PrinterStatus {
   ams: AMSUnit[];
   ams_exists: boolean;
   vt_tray: AMSTray[];  // Virtual tray / external spool(s)
-  sdcard: boolean;  // SD card inserted
   store_to_sdcard: boolean;  // Store sent files on SD card
   timelapse: boolean;  // Timelapse recording active
   ipcam: boolean;  // Live view enabled
   wifi_signal: number | null;  // WiFi signal strength in dBm
   wired_network: boolean;  // Ethernet connection detected
+  door_open: boolean;  // Enclosure door open (X1/P1S/P2S/H2*)
   nozzles: NozzleInfo[];  // Nozzle hardware info (index 0=left/primary, 1=right)
   nozzle_rack: NozzleRackSlot[];  // H2C 6-nozzle tool-changer rack
   print_options: PrintOptions | null;  // AI detection and print options
@@ -264,8 +292,9 @@ export interface PrinterStatus {
   firmware_version: string | null;   // Firmware version from MQTT
   // Developer LAN mode: true = enabled, false = disabled, null = unknown
   developer_mode: boolean | null;
-  // Queue: user has acknowledged plate is cleared for next queued print
-  plate_cleared: boolean;
+  // Queue: printer is awaiting user ack that the build plate was cleared after a
+  // finished/failed print. Persisted across restarts (#961).
+  awaiting_plate_clear: boolean;
   // AMS drying support
   supports_drying: boolean;
 }
@@ -441,6 +470,10 @@ export interface ArchiveStats {
   time_accuracy_by_printer: Record<string, number> | null;
   total_energy_kwh: number;
   total_energy_cost: number;
+  // True when a date-filtered total-consumption query is running on incomplete
+  // snapshot history (e.g. right after upgrade, before hourly snapshots have
+  // a baseline). UI should explain why the number may undercount.
+  energy_data_warming_up?: boolean;
 }
 
 export interface TagInfo {
@@ -812,6 +845,13 @@ export interface AppSettings {
   queue_drying_block: boolean;  // Block queue until drying completes
   ambient_drying_enabled: boolean;  // Auto-dry idle printers based on humidity regardless of queue
   drying_presets: string;  // JSON blob of drying presets per filament type
+  gcode_snippets: string;  // JSON: per-model G-code injection snippets
+  // Scheduled local backup
+  local_backup_enabled: boolean;
+  local_backup_schedule: string;
+  local_backup_time: string;
+  local_backup_retention: number;
+  local_backup_path: string;
   // Print modal settings
   per_printer_mapping_expanded: boolean;  // Whether custom mapping is expanded by default in print modal
   // Date/time format settings
@@ -819,6 +859,7 @@ export interface AppSettings {
   time_format: 'system' | '12h' | '24h';
   // Filament tracking
   disable_filament_warnings: boolean;  // Disable filament warnings (print insufficiency and assignment mismatch)
+  prefer_lowest_filament: boolean;  // When multiple spools match, prefer lowest remaining filament
   // Default printer
   default_printer_id: number | null;
   // Dark mode theme settings
@@ -867,8 +908,38 @@ export interface AppSettings {
   low_stock_threshold: number;
   // User email notifications toggle
   user_notifications_enabled: boolean;
+  // Default print options
+  default_bed_levelling: boolean;
+  default_flow_cali: boolean;
+  default_vibration_cali: boolean;
+  default_layer_inspect: boolean;
+  default_timelapse: boolean;
+  // Staggered batch start defaults
+  stagger_group_size: number;
+  stagger_interval_minutes: number;
+  // Plate-clear confirmation
+  require_plate_clear: boolean;
+  // Shortest job first scheduling
+  queue_shortest_first: boolean;
   // Default sidebar order (admin-set for all users)
   default_sidebar_order: string;
+  // LDAP authentication
+  ldap_enabled: boolean;
+  ldap_server_url: string;
+  ldap_bind_dn: string;
+  ldap_bind_password: string;
+  ldap_search_base: string;
+  ldap_user_filter: string;
+  ldap_security: string;
+  ldap_group_mapping: string;
+  ldap_auto_provision: boolean;
+  ldap_default_group: string;
+  obico_enabled: boolean;
+  obico_ml_url: string;
+  obico_sensitivity: 'low' | 'medium' | 'high';
+  obico_action: 'notify' | 'pause' | 'pause_and_off';
+  obico_poll_interval: number;
+  obico_enabled_printers: string;
 }
 
 export type AppSettingsUpdate = Partial<AppSettings>;
@@ -886,6 +957,7 @@ export interface MQTTStatus {
 export interface CloudAuthStatus {
   is_authenticated: boolean;
   email: string | null;
+  region?: 'global' | 'china' | null;
 }
 
 export interface CloudLoginResponse {
@@ -1047,7 +1119,7 @@ export interface CloudDevice {
 export interface SmartPlug {
   id: number;
   name: string;
-  plug_type: 'tasmota' | 'homeassistant' | 'mqtt';
+  plug_type: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
   ip_address: string | null;  // Required for Tasmota
   ha_entity_id: string | null;  // Required for Home Assistant (e.g., "switch.printer_plug", "script.turn_on_printer")
   // Home Assistant energy sensor entities (optional)
@@ -1070,6 +1142,22 @@ export interface SmartPlug {
   mqtt_state_topic: string | null;  // Topic for state data
   mqtt_state_path: string | null;  // e.g., "state_l1" for ON/OFF
   mqtt_state_on_value: string | null;  // What value means "ON" (e.g., "ON", "true", "1")
+  // REST/Webhook fields (required when plug_type="rest")
+  rest_on_url: string | null;
+  rest_on_body: string | null;
+  rest_off_url: string | null;
+  rest_off_body: string | null;
+  rest_method: string | null;
+  rest_headers: string | null;
+  rest_status_url: string | null;
+  rest_status_path: string | null;
+  rest_status_on_value: string | null;
+  rest_power_url: string | null;
+  rest_power_path: string | null;
+  rest_power_multiplier: number;
+  rest_energy_url: string | null;
+  rest_energy_path: string | null;
+  rest_energy_multiplier: number;
   printer_id: number | null;
   enabled: boolean;
   auto_on: boolean;
@@ -1102,7 +1190,7 @@ export interface SmartPlug {
 
 export interface SmartPlugCreate {
   name: string;
-  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt';
+  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
   ip_address?: string | null;  // Required for Tasmota
   ha_entity_id?: string | null;  // Required for Home Assistant
   // Home Assistant energy sensor entities (optional)
@@ -1125,6 +1213,22 @@ export interface SmartPlugCreate {
   mqtt_state_topic?: string | null;
   mqtt_state_path?: string | null;
   mqtt_state_on_value?: string | null;
+  // REST fields
+  rest_on_url?: string | null;
+  rest_on_body?: string | null;
+  rest_off_url?: string | null;
+  rest_off_body?: string | null;
+  rest_method?: string | null;
+  rest_headers?: string | null;
+  rest_status_url?: string | null;
+  rest_status_path?: string | null;
+  rest_status_on_value?: string | null;
+  rest_power_url?: string | null;
+  rest_power_path?: string | null;
+  rest_power_multiplier?: number;
+  rest_energy_url?: string | null;
+  rest_energy_path?: string | null;
+  rest_energy_multiplier?: number;
   printer_id?: number | null;
   enabled?: boolean;
   auto_on?: boolean;
@@ -1150,7 +1254,7 @@ export interface SmartPlugCreate {
 
 export interface SmartPlugUpdate {
   name?: string;
-  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt';
+  plug_type?: 'tasmota' | 'homeassistant' | 'mqtt' | 'rest';
   ip_address?: string | null;
   ha_entity_id?: string | null;
   // Home Assistant energy sensor entities (optional)
@@ -1172,6 +1276,22 @@ export interface SmartPlugUpdate {
   mqtt_state_topic?: string | null;
   mqtt_state_path?: string | null;
   mqtt_state_on_value?: string | null;
+  // REST fields
+  rest_on_url?: string | null;
+  rest_on_body?: string | null;
+  rest_off_url?: string | null;
+  rest_off_body?: string | null;
+  rest_method?: string | null;
+  rest_headers?: string | null;
+  rest_status_url?: string | null;
+  rest_status_path?: string | null;
+  rest_status_on_value?: string | null;
+  rest_power_url?: string | null;
+  rest_power_path?: string | null;
+  rest_power_multiplier?: number;
+  rest_energy_url?: string | null;
+  rest_energy_path?: string | null;
+  rest_energy_multiplier?: number;
   printer_id?: number | null;
   enabled?: boolean;
   auto_on?: boolean;
@@ -1298,6 +1418,30 @@ export interface PrintQueueItem {
   // User tracking (Issue #206)
   created_by_id?: number | null;
   created_by_username?: string | null;
+  // Batch grouping
+  batch_id?: number | null;
+  batch_name?: string | null;
+  // Shortest-job-first scheduling
+  been_jumped?: boolean;
+  // Auto-print G-code injection
+  gcode_injection?: boolean;
+}
+
+export interface PrintBatch {
+  id: number;
+  name: string;
+  archive_id: number | null;
+  library_file_id: number | null;
+  quantity: number;
+  status: string;
+  created_at: string;
+  created_by_id: number | null;
+  created_by_username: string | null;
+  pending_count: number;
+  printing_count: number;
+  completed_count: number;
+  failed_count: number;
+  cancelled_count: number;
 }
 
 export interface PrintQueueItemCreate {
@@ -1320,6 +1464,12 @@ export interface PrintQueueItemCreate {
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  // Auto-print G-code injection
+  gcode_injection?: boolean;
+  // Batch: create multiple copies (creates a batch if > 1)
+  quantity?: number;
+  // Project to associate the resulting archive with
+  project_id?: number;
 }
 
 export interface PrintQueueItemUpdate {
@@ -1341,6 +1491,8 @@ export interface PrintQueueItemUpdate {
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  // Auto-print G-code injection
+  gcode_injection?: boolean;
 }
 
 export interface PrintQueueBulkUpdate {
@@ -1357,6 +1509,8 @@ export interface PrintQueueBulkUpdate {
   layer_inspect?: boolean;
   timelapse?: boolean;
   use_ams?: boolean;
+  // Auto-print G-code injection
+  gcode_injection?: boolean;
 }
 
 export interface PrintQueueBulkUpdateResponse {
@@ -1626,6 +1780,8 @@ export interface GitHubBackupConfig {
   backup_kprofiles: boolean;
   backup_cloud_profiles: boolean;
   backup_settings: boolean;
+  backup_spools: boolean;
+  backup_archives: boolean;
   enabled: boolean;
   last_backup_at: string | null;
   last_backup_status: string | null;
@@ -1645,6 +1801,8 @@ export interface GitHubBackupConfigCreate {
   backup_kprofiles?: boolean;
   backup_cloud_profiles?: boolean;
   backup_settings?: boolean;
+  backup_spools?: boolean;
+  backup_archives?: boolean;
   enabled?: boolean;
 }
 
@@ -1668,6 +1826,57 @@ export interface GitHubBackupStatus {
   last_backup_at: string | null;
   last_backup_status: string | null;
   next_scheduled_run: string | null;
+}
+
+export interface LocalBackupStatus {
+  enabled: boolean;
+  schedule: string;
+  time: string;
+  retention: number;
+  path: string;
+  default_path: string;
+  is_running: boolean;
+  last_backup_at: string | null;
+  last_status: string | null;
+  last_message: string | null;
+  next_run: string | null;
+}
+
+export interface LocalBackupFile {
+  filename: string;
+  size: number;
+  created_at: string;
+}
+
+export interface ObicoDetectionEvent {
+  printer_id: number;
+  task_name: string;
+  timestamp: string;
+  current_p: number;
+  score: number;
+  class: 'safe' | 'warning' | 'failure';
+  detections: number;
+}
+
+export interface ObicoStatus {
+  is_running: boolean;
+  last_error: string | null;
+  per_printer: Record<string, { class: string; frame_count: number; score: number }>;
+  thresholds: { low: number; high: number };
+  history: ObicoDetectionEvent[];
+  enabled: boolean;
+  ml_url: string;
+  sensitivity: 'low' | 'medium' | 'high';
+  action: 'notify' | 'pause' | 'pause_and_off';
+  poll_interval: number;
+  external_url_configured: boolean;
+}
+
+export interface ObicoTestConnection {
+  ok: boolean;
+  status_code: number | null;
+  body: string | null;
+  error: string | null;
 }
 
 export interface GitHubTestConnectionResponse {
@@ -1820,6 +2029,7 @@ export interface SpoolmanSyncResult {
 export interface UnlinkedSpool {
   id: number;
   filament_name: string | null;
+  filament_vendor: string | null;
   filament_material: string | null;
   filament_color_hex: string | null;
   remaining_weight: number | null;
@@ -2072,7 +2282,7 @@ export type Permission =
   | 'discovery:scan'
   | 'firmware:read' | 'firmware:update'
   | 'ams_history:read'
-  | 'stats:read'
+  | 'stats:read' | 'stats:filter_by_user'
   | 'system:read'
   | 'settings:read' | 'settings:update' | 'settings:backup' | 'settings:restore'
   | 'github:backup' | 'github:restore'
@@ -2145,9 +2355,13 @@ export interface LoginRequest {
 }
 
 export interface LoginResponse {
-  access_token: string;
-  token_type: string;
-  user: UserResponse;
+  access_token?: string;
+  token_type?: string;
+  user?: UserResponse;
+  /** Set when 2FA verification is required before a full token is issued. */
+  requires_2fa?: boolean;
+  pre_auth_token?: string;
+  two_fa_methods?: string[];
 }
 
 export interface UserResponse {
@@ -2157,6 +2371,7 @@ export interface UserResponse {
   role: string;  // Deprecated, kept for backward compatibility
   is_active: boolean;
   is_admin: boolean;  // Computed from role and group membership
+  auth_source: string;  // "local" or "ldap"
   groups: GroupBrief[];
   permissions: Permission[];  // All permissions from groups
   created_at: string;
@@ -2212,6 +2427,68 @@ export interface SMTPSettings {
   smtp_from_name: string;
 }
 
+// 2FA / MFA interfaces
+export interface TwoFAStatus {
+  totp_enabled: boolean;
+  email_otp_enabled: boolean;
+  backup_codes_remaining: number;
+}
+
+export interface TOTPSetupResponse {
+  secret: string;
+  qr_code_b64: string;
+  issuer: string;
+}
+
+export interface TOTPEnableResponse {
+  message: string;
+  backup_codes: string[];
+}
+
+export interface BackupCodesResponse {
+  backup_codes: string[];
+  message: string;
+}
+
+export interface TwoFAVerifyRequest {
+  pre_auth_token: string;
+  code: string;
+  method: 'totp' | 'email' | 'backup';
+}
+
+// OIDC interfaces
+export interface OIDCProvider {
+  id: number;
+  name: string;
+  issuer_url: string;
+  client_id: string;
+  scopes: string;
+  is_enabled: boolean;
+  auto_create_users: boolean;
+  auto_link_existing_accounts: boolean;
+  icon_url?: string | null;
+}
+
+export interface OIDCProviderCreate {
+  name: string;
+  issuer_url: string;
+  client_id: string;
+  client_secret: string;
+  scopes?: string;
+  is_enabled?: boolean;
+  auto_create_users?: boolean;
+  auto_link_existing_accounts?: boolean;
+  icon_url?: string | null;
+}
+
+export interface OIDCLink {
+  id: number;
+  provider_id: number;
+  provider_name: string;
+  provider_email?: string | null;
+  created_at: string;
+}
+
 export interface TestSMTPRequest {
   test_recipient: string;
 }
@@ -2224,6 +2501,16 @@ export interface TestSMTPResponse {
 export interface AdvancedAuthStatus {
   advanced_auth_enabled: boolean;
   smtp_configured: boolean;
+}
+
+export interface LDAPStatus {
+  ldap_enabled: boolean;
+  ldap_configured: boolean;
+}
+
+export interface LDAPTestResponse {
+  success: boolean;
+  message: string;
 }
 
 export interface SetupResponse {
@@ -2281,16 +2568,116 @@ export const api = {
       method: 'POST',
     }),
   getAdvancedAuthStatus: () => request<AdvancedAuthStatus>('/auth/advanced-auth/status'),
+  // LDAP Authentication
+  getLDAPStatus: () => request<LDAPStatus>('/auth/ldap/status'),
+  testLDAP: () =>
+    request<LDAPTestResponse>('/auth/ldap/test', {
+      method: 'POST',
+    }),
   forgotPassword: (data: ForgotPasswordRequest) =>
     request<ForgotPasswordResponse>('/auth/forgot-password', {
       method: 'POST',
       body: JSON.stringify(data),
+    }),
+  // H-6: Confirm password reset using the token from the emailed link
+  forgotPasswordConfirm: (token: string, newPassword: string) =>
+    request<ForgotPasswordResponse>('/auth/forgot-password/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ token, new_password: newPassword }),
     }),
   resetUserPassword: (data: ResetPasswordRequest) =>
     request<ResetPasswordResponse>('/auth/reset-password', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  // 2FA - status
+  get2FAStatus: () => request<TwoFAStatus>('/auth/2fa/status'),
+
+  // 2FA - TOTP
+  setupTOTP: () => request<TOTPSetupResponse>('/auth/2fa/totp/setup', { method: 'POST' }),
+  enableTOTP: (code: string) =>
+    request<TOTPEnableResponse>('/auth/2fa/totp/enable', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  disableTOTP: (code: string) =>
+    request<{ message: string }>('/auth/2fa/totp/disable', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+  regenerateBackupCodes: (code: string) =>
+    request<BackupCodesResponse>('/auth/2fa/totp/regenerate-backup-codes', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
+    }),
+
+  // 2FA - Email OTP
+  // Step 1: send a verification code to the user's email (proof of possession)
+  enableEmailOTP: () =>
+    request<{ message: string; setup_token: string }>('/auth/2fa/email/enable', { method: 'POST' }),
+  // Step 2: confirm with the code received by email
+  confirmEnableEmailOTP: (setup_token: string, code: string) =>
+    request<{ message: string }>('/auth/2fa/email/enable/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ setup_token, code }),
+    }),
+  // Disable requires account password for re-auth
+  disableEmailOTP: (password: string) =>
+    request<{ message: string }>('/auth/2fa/email/disable', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+  sendEmailOTP: (preAuthToken: string) =>
+    request<{ message: string; pre_auth_token?: string }>('/auth/2fa/email/send', {
+      method: 'POST',
+      body: JSON.stringify({ pre_auth_token: preAuthToken }),
+    }),
+
+  // 2FA - verify (completes login)
+  verify2FA: (data: TwoFAVerifyRequest) =>
+    request<LoginResponse>('/auth/2fa/verify', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  // 2FA - admin
+  admin2FADisable: (userId: number) =>
+    request<{ message: string }>(`/auth/2fa/admin/${userId}`, { method: 'DELETE' }),
+
+  // OIDC providers (public list)
+  getOIDCProviders: () => request<OIDCProvider[]>('/auth/oidc/providers'),
+
+  // OIDC providers (admin)
+  getOIDCProvidersAll: () => request<OIDCProvider[]>('/auth/oidc/providers/all'),
+  createOIDCProvider: (data: OIDCProviderCreate) =>
+    request<OIDCProvider>('/auth/oidc/providers', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateOIDCProvider: (id: number, data: Partial<OIDCProviderCreate>) =>
+    request<OIDCProvider>(`/auth/oidc/providers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  deleteOIDCProvider: (id: number) =>
+    request<{ message: string }>(`/auth/oidc/providers/${id}`, { method: 'DELETE' }),
+
+  // OIDC authorize URL
+  getOIDCAuthorizeUrl: (providerId: number) =>
+    request<{ auth_url: string }>(`/auth/oidc/authorize/${providerId}`),
+
+  // OIDC exchange token for JWT
+  exchangeOIDCToken: (oidcToken: string) =>
+    request<LoginResponse>('/auth/oidc/exchange', {
+      method: 'POST',
+      body: JSON.stringify({ oidc_token: oidcToken }),
+    }),
+
+  // OIDC links for current user
+  getOIDCLinks: () => request<OIDCLink[]>('/auth/oidc/links'),
+  deleteOIDCLink: (providerId: number) =>
+    request<{ message: string }>(`/auth/oidc/links/${providerId}`, { method: 'DELETE' }),
 
   // Users
   getUsers: () => request<UserResponse[]>('/users/'),
@@ -2426,6 +2813,23 @@ export const api = {
       method: 'POST',
     }),
 
+  setAirductMode: (printerId: number, mode: 'cooling' | 'heating') =>
+    request<{ success: boolean; message: string }>(`/printers/${printerId}/airduct-mode?mode=${mode}`, {
+      method: 'POST',
+    }),
+
+  // Bed (Z-axis) jog
+  bedJog: (printerId: number, distance: number, force: boolean = false) =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/bed-jog?distance=${distance}&force=${force}`,
+      { method: 'POST' }
+    ),
+  homeAxes: (printerId: number, axes: 'z' | 'xy' | 'all' = 'z') =>
+    request<{ success: boolean; message: string }>(
+      `/printers/${printerId}/home-axes?axes=${axes}`,
+      { method: 'POST' }
+    ),
+
   // Chamber Light Control
   setChamberLight: (printerId: number, on: boolean) =>
     request<{ success: boolean; message: string }>(`/printers/${printerId}/chamber-light?on=${on}`, {
@@ -2530,7 +2934,7 @@ export const api = {
       is_multi_plate: boolean;
     }>(`/printers/${printerId}/files/plates?path=${encodeURIComponent(path)}`),
   getPrinterFilePlateThumbnail: (printerId: number, plateIndex: number, path: string) =>
-    `${API_BASE}/printers/${printerId}/files/plate-thumbnail/${plateIndex}?path=${encodeURIComponent(path)}`,
+    withStreamToken(`${API_BASE}/printers/${printerId}/files/plate-thumbnail/${plateIndex}?path=${encodeURIComponent(path)}`),
   downloadPrinterFile: async (printerId: number, path: string): Promise<void> => {
     const headers: Record<string, string> = {};
     if (authToken) {
@@ -2580,7 +2984,7 @@ export const api = {
     request<{ used_bytes: number | null; free_bytes: number | null }>(`/printers/${printerId}/storage`),
 
   // Archives
-  getArchives: (printerId?: number, projectId?: number, limit = 50, offset = 0, dateFrom?: string, dateTo?: string) => {
+  getArchives: (printerId?: number, projectId?: number, limit = 10000, offset = 0, dateFrom?: string, dateTo?: string) => {
     const params = new URLSearchParams();
     if (printerId) params.set('printer_id', String(printerId));
     if (projectId) params.set('project_id', String(projectId));
@@ -2590,10 +2994,11 @@ export const api = {
     if (dateTo) params.set('date_to', dateTo);
     return request<Archive[]>(`/archives/?${params}`);
   },
-  getArchivesSlim: (dateFrom?: string, dateTo?: string) => {
+  getArchivesSlim: (dateFrom?: string, dateTo?: string, createdById?: number) => {
     const params = new URLSearchParams();
     if (dateFrom) params.set('date_from', dateFrom);
     if (dateTo) params.set('date_to', dateTo);
+    if (createdById !== undefined) params.set('created_by_id', String(createdById));
     const qs = params.toString();
     return request<ArchiveSlim[]>(`/archives/slim${qs ? `?${qs}` : ''}`);
   },
@@ -2636,10 +3041,11 @@ export const api = {
     request<Archive>(`/archives/${id}/favorite`, { method: 'POST' }),
   deleteArchive: (id: number) =>
     request<void>(`/archives/${id}`, { method: 'DELETE' }),
-  getArchiveStats: (options?: { dateFrom?: string; dateTo?: string }) => {
+  getArchiveStats: (options?: { dateFrom?: string; dateTo?: string; createdById?: number }) => {
     const params = new URLSearchParams();
     if (options?.dateFrom) params.set('date_from', options.dateFrom);
     if (options?.dateTo) params.set('date_to', options.dateTo);
+    if (options?.createdById !== undefined) params.set('created_by_id', String(options.createdById));
     const qs = params.toString();
     return request<ArchiveStats>(`/archives/stats${qs ? `?${qs}` : ''}`);
   },
@@ -2656,13 +3062,14 @@ export const api = {
     }),
   recalculateCosts: () =>
     request<{ message: string; updated: number }>('/archives/recalculate-costs', { method: 'POST' }),
-  getFailureAnalysis: (options?: { days?: number; dateFrom?: string; dateTo?: string; printerId?: number; projectId?: number }) => {
+  getFailureAnalysis: (options?: { days?: number; dateFrom?: string; dateTo?: string; printerId?: number; projectId?: number; createdById?: number }) => {
     const params = new URLSearchParams();
     if (options?.days) params.set('days', String(options.days));
     if (options?.dateFrom) params.set('date_from', options.dateFrom);
     if (options?.dateTo) params.set('date_to', options.dateTo);
     if (options?.printerId) params.set('printer_id', String(options.printerId));
     if (options?.projectId) params.set('project_id', String(options.projectId));
+    if (options?.createdById !== undefined) params.set('created_by_id', String(options.createdById));
     const qs = params.toString();
     return request<FailureAnalysis>(`/archives/analysis/failures${qs ? `?${qs}` : ''}`);
   },
@@ -2715,12 +3122,14 @@ export const api = {
     days?: number;
     printerId?: number;
     projectId?: number;
+    createdById?: number;
   }): Promise<{ blob: Blob; filename: string }> => {
     const params = new URLSearchParams();
     if (options?.format) params.set('format', options.format);
     if (options?.days) params.set('days', String(options.days));
     if (options?.printerId) params.set('printer_id', String(options.printerId));
     if (options?.projectId) params.set('project_id', String(options.projectId));
+    if (options?.createdById !== undefined) params.set('created_by_id', String(options.createdById));
 
     const headers: Record<string, string> = {};
     if (authToken) {
@@ -2748,9 +3157,9 @@ export const api = {
     request<{ updated: number; errors: Array<{ id: number; error: string }> }>('/archives/backfill-hashes', {
       method: 'POST',
     }),
-  getArchiveThumbnail: (id: number) => `${API_BASE}/archives/${id}/thumbnail?v=${Date.now()}`,
+  getArchiveThumbnail: (id: number) => withStreamToken(`${API_BASE}/archives/${id}/thumbnail?v=${Date.now()}`),
   getArchivePlateThumbnail: (id: number, plateIndex: number) =>
-    `${API_BASE}/archives/${id}/plate-thumbnail/${plateIndex}`,
+    withStreamToken(`${API_BASE}/archives/${id}/plate-thumbnail/${plateIndex}`),
   getArchiveDownload: (id: number) => `${API_BASE}/archives/${id}/download`,
   downloadArchive: async (id: number, filename?: string): Promise<void> => {
     const headers: Record<string, string> = {};
@@ -2775,8 +3184,8 @@ export const api = {
     window.URL.revokeObjectURL(url);
   },
   getArchiveGcode: (id: number) => `${API_BASE}/archives/${id}/gcode`,
-  getArchivePlatePreview: (id: number) => `${API_BASE}/archives/${id}/plate-preview`,
-  getArchiveTimelapse: (id: number) => `${API_BASE}/archives/${id}/timelapse?v=${Date.now()}`,
+  getArchivePlatePreview: (id: number) => withStreamToken(`${API_BASE}/archives/${id}/plate-preview`),
+  getArchiveTimelapse: (id: number) => withStreamToken(`${API_BASE}/archives/${id}/timelapse?v=${Date.now()}`),
   scanArchiveTimelapse: (id: number) =>
     request<{
       status: string;
@@ -2870,7 +3279,7 @@ export const api = {
   },
   // Photos
   getArchivePhotoUrl: (archiveId: number, filename: string) =>
-    `${API_BASE}/archives/${archiveId}/photos/${encodeURIComponent(filename)}`,
+    withStreamToken(`${API_BASE}/archives/${archiveId}/photos/${encodeURIComponent(filename)}`),
   uploadArchivePhoto: async (archiveId: number, file: File): Promise<{ status: string; filename: string; photos: string[] }> => {
     const formData = new FormData();
     formData.append('file', file);
@@ -3001,7 +3410,7 @@ export const api = {
 
   // QR Code
   getArchiveQRCodeUrl: (archiveId: number, size = 200) =>
-    `${API_BASE}/archives/${archiveId}/qrcode?size=${size}`,
+    withStreamToken(`${API_BASE}/archives/${archiveId}/qrcode?size=${size}`),
   getArchiveCapabilities: (id: number) =>
     request<{
       has_model: boolean;
@@ -3048,7 +3457,7 @@ export const api = {
       body: JSON.stringify(data),
     }),
   getArchiveProjectImageUrl: (archiveId: number, imagePath: string) =>
-    `${API_BASE}/archives/${archiveId}/project-image/${encodeURIComponent(imagePath)}`,
+    withStreamToken(`${API_BASE}/archives/${archiveId}/project-image/${encodeURIComponent(imagePath)}`),
   getArchiveForSlicer: (id: number, filename: string) => {
     const safe = filename.replace(/[/\\?#]/g, '_');
     return `${API_BASE}/archives/${id}/file/${encodeURIComponent(safe.endsWith('.3mf') ? safe : safe + '.3mf')}`;
@@ -3162,7 +3571,7 @@ export const api = {
     if (params?.offset !== undefined) searchParams.set('offset', String(params.offset));
     return request<PrintLogResponse>(`/print-log/?${searchParams}`);
   },
-  getPrintLogThumbnail: (id: number) => `${API_BASE}/print-log/${id}/thumbnail`,
+  getPrintLogThumbnail: (id: number) => withStreamToken(`${API_BASE}/print-log/${id}/thumbnail`),
   clearPrintLog: () =>
     request<{ deleted: number }>('/print-log/', { method: 'DELETE' }),
 
@@ -3197,7 +3606,7 @@ export const api = {
     let filename = 'bambuddy-backup.zip';
     if (contentDisposition) {
       const match = contentDisposition.match(/filename=([^;]+)/);
-      if (match) filename = match[1].trim();
+      if (match) filename = match[1].trim().replace(/^"(.*)"$/, '$1');
     }
 
     const blob = await response.blob();
@@ -3234,15 +3643,15 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password, region }),
     }),
-  cloudVerify: (email: string, code: string, tfaKey?: string) =>
+  cloudVerify: (email: string, code: string, tfaKey?: string, region: string = 'global') =>
     request<CloudLoginResponse>('/cloud/verify', {
       method: 'POST',
-      body: JSON.stringify({ email, code, tfa_key: tfaKey }),
+      body: JSON.stringify({ email, code, tfa_key: tfaKey, region }),
     }),
-  cloudSetToken: (access_token: string) =>
+  cloudSetToken: (access_token: string, region: string = 'global') =>
     request<CloudAuthStatus>('/cloud/token', {
       method: 'POST',
-      body: JSON.stringify({ access_token }),
+      body: JSON.stringify({ access_token, region }),
     }),
   cloudLogout: () =>
     request<{ success: boolean }>('/cloud/logout', { method: 'POST' }),
@@ -3332,6 +3741,13 @@ export const api = {
   getHASensorEntities: () =>
     request<HASensorEntity[]>('/smart-plugs/ha/sensors'),
 
+  // REST smart plug
+  testRESTConnection: (url: string, method: string = 'GET', headers?: string | null) =>
+    request<{ success: boolean; error: string | null }>('/smart-plugs/rest/test-connection', {
+      method: 'POST',
+      body: JSON.stringify({ url, method, headers }),
+    }),
+
   // Print Queue
   getQueue: (printerId?: number, status?: string, targetModel?: string) => {
     const params = new URLSearchParams();
@@ -3369,6 +3785,14 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+  // Batches
+  getBatches: (status?: string) => {
+    const params = status ? `?status=${status}` : '';
+    return request<PrintBatch[]>(`/queue/batches${params}`);
+  },
+  getBatch: (id: number) => request<PrintBatch>(`/queue/batches/${id}`),
+  cancelBatch: (id: number) =>
+    request<{ message: string }>(`/queue/batches/${id}`, { method: 'DELETE' }),
 
   // K-Profiles
   getKProfiles: (printerId: number, nozzleDiameter = '0.4') =>
@@ -3681,6 +4105,8 @@ export const api = {
     request<{ status: string }>('/inventory/catalog/reset', { method: 'POST' }),
   getColorCatalog: () =>
     request<ColorCatalogEntry[]>('/inventory/colors'),
+  getColorNameMap: () =>
+    request<{ colors: Record<string, string> }>('/inventory/colors/map'),
   addColorEntry: (data: { manufacturer: string; color_name: string; hex_color: string; material: string | null }) =>
     request<ColorCatalogEntry>('/inventory/colors', { method: 'POST', body: JSON.stringify(data) }),
   updateColorEntry: (id: number, data: { manufacturer: string; color_name: string; hex_color: string; material: string | null }) =>
@@ -3767,10 +4193,12 @@ export const api = {
     }),
 
   // Camera
+  getCameraStreamToken: () =>
+    request<{ token: string }>('/printers/camera/stream-token', { method: 'POST' }),
   getCameraStreamUrl: (printerId: number, fps = 10) =>
-    `${API_BASE}/printers/${printerId}/camera/stream?fps=${fps}`,
+    withStreamToken(`${API_BASE}/printers/${printerId}/camera/stream?fps=${fps}`),
   getCameraSnapshotUrl: (printerId: number) =>
-    `${API_BASE}/printers/${printerId}/camera/snapshot`,
+    withStreamToken(`${API_BASE}/printers/${printerId}/camera/snapshot`),
   testCameraConnection: (printerId: number) =>
     request<{ success: boolean; message?: string; error?: string }>(`/printers/${printerId}/camera/test`),
   getCameraStatus: (printerId: number) =>
@@ -3811,9 +4239,8 @@ export const api = {
       max_references: number;
     }>(`/printers/${printerId}/camera/plate-detection/references`);
   },
-  getPlateReferenceThumbnailUrl: (printerId: number, index: number) => {
-    return `${API_BASE}/printers/${printerId}/camera/plate-detection/references/${index}/thumbnail`;
-  },
+  getPlateReferenceThumbnailUrl: (printerId: number, index: number) =>
+    withStreamToken(`${API_BASE}/printers/${printerId}/camera/plate-detection/references/${index}/thumbnail`),
   updatePlateReferenceLabel: (printerId: number, index: number, label: string) => {
     const params = new URLSearchParams();
     params.set('label', label);
@@ -3869,7 +4296,7 @@ export const api = {
   },
   deleteExternalLinkIcon: (id: number) =>
     request<ExternalLink>(`/external-links/${id}/icon`, { method: 'DELETE' }),
-  getExternalLinkIconUrl: (id: number) => `${API_BASE}/external-links/${id}/icon`,
+  getExternalLinkIconUrl: (id: number) => withStreamToken(`${API_BASE}/external-links/${id}/icon`),
 
   // Projects
   getProjects: (status?: string) => {
@@ -4073,10 +4500,13 @@ export const api = {
   getLibraryFoldersByArchive: (archiveId: number) =>
     request<LibraryFolder[]>(`/library/folders/by-archive/${archiveId}`),
 
-  getLibraryFiles: (folderId?: number | null, includeRoot = true) => {
+  getLibraryFiles: (folderId?: number | null, includeRoot = true, projectId?: number) => {
     const params = new URLSearchParams();
     if (folderId !== undefined && folderId !== null) {
       params.set('folder_id', String(folderId));
+    }
+    if (projectId !== undefined) {
+      params.set('project_id', String(projectId));
     }
     params.set('include_root', String(includeRoot));
     return request<LibraryFileListItem[]>(`/library/files?${params}`);
@@ -4170,9 +4600,9 @@ export const api = {
     document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
   },
-  getLibraryFileThumbnailUrl: (id: number) => `${API_BASE}/library/files/${id}/thumbnail`,
+  getLibraryFileThumbnailUrl: (id: number) => withStreamToken(`${API_BASE}/library/files/${id}/thumbnail`),
   getLibraryFilePlateThumbnail: (id: number, plateIndex: number) =>
-    `${API_BASE}/library/files/${id}/plate-thumbnail/${plateIndex}`,
+    withStreamToken(`${API_BASE}/library/files/${id}/plate-thumbnail/${plateIndex}`),
   getLibraryFileGcodeUrl: (id: number) => `${API_BASE}/library/files/${id}/gcode`,
   moveLibraryFiles: (fileIds: number[], folderId: number | null) =>
     request<{ status: string; moved: number }>('/library/files/move', {
@@ -4212,6 +4642,7 @@ export const api = {
       layer_inspect?: boolean;
       timelapse?: boolean;
       use_ams?: boolean;
+      project_id?: number;
     }
   ) =>
     request<BackgroundDispatchResponse>(
@@ -4286,6 +4717,41 @@ export const api = {
   clearGitHubBackupLogs: (keepLast: number = 10) =>
     request<{ deleted: number; message: string }>(`/github-backup/logs?keep_last=${keepLast}`, { method: 'DELETE' }),
 
+  // Scheduled local backups
+  getLocalBackupStatus: () =>
+    request<LocalBackupStatus>('/local-backup/status'),
+
+  triggerLocalBackup: () =>
+    request<{ success: boolean; message: string; filename?: string }>('/local-backup/run', { method: 'POST' }),
+
+  getLocalBackups: () =>
+    request<LocalBackupFile[]>('/local-backup/backups'),
+
+  downloadLocalBackup: async (filename: string): Promise<{ blob: Blob; filename: string }> => {
+    const response = await fetch(`${API_BASE}/local-backup/backups/${encodeURIComponent(filename)}/download`, {
+      headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {},
+    });
+    if (!response.ok) throw new Error('Download failed');
+    const blob = await response.blob();
+    return { blob, filename };
+  },
+
+  restoreLocalBackup: (filename: string) =>
+    request<{ success: boolean; message: string }>(`/local-backup/backups/${encodeURIComponent(filename)}/restore`, { method: 'POST' }),
+
+  deleteLocalBackup: (filename: string) =>
+    request<{ success: boolean; message: string }>(`/local-backup/backups/${encodeURIComponent(filename)}`, { method: 'DELETE' }),
+
+  // Obico AI failure detection
+  getObicoStatus: () =>
+    request<ObicoStatus>('/obico/status'),
+
+  testObicoConnection: (url: string) =>
+    request<ObicoTestConnection>('/obico/test-connection', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
+
   // Local Presets (OrcaSlicer imports)
   getLocalPresets: () =>
     request<LocalPresetsResponse>('/local-presets/'),
@@ -4347,6 +4813,8 @@ export interface SystemInfo {
     archive_dir: string;
   };
   database: {
+    engine: string;
+    version: string;
     archives: number;
     archives_completed: number;
     archives_failed: number;
@@ -4871,6 +5339,14 @@ export const pendingUploadsApi = {
 };
 
 // Firmware API Types
+export interface AvailableFirmwareVersion {
+  version: string;
+  file_available: boolean;
+  download_url: string | null;
+  release_notes: string | null;
+  release_time: string | null;
+}
+
 export interface FirmwareUpdateInfo {
   printer_id: number;
   printer_name: string;
@@ -4880,6 +5356,7 @@ export interface FirmwareUpdateInfo {
   update_available: boolean;
   download_url: string | null;
   release_notes: string | null;
+  available_versions: AvailableFirmwareVersion[];
 }
 
 export interface FirmwareUploadPrepare {
@@ -4891,6 +5368,7 @@ export interface FirmwareUploadPrepare {
   update_available: boolean;
   current_version: string | null;
   latest_version: string | null;
+  target_version: string | null;
   firmware_filename: string | null;
   errors: string[];
 }
@@ -4912,13 +5390,16 @@ export const firmwareApi = {
   checkPrinterUpdate: (printerId: number) =>
     request<FirmwareUpdateInfo>(`/firmware/updates/${printerId}`),
 
-  prepareUpload: (printerId: number) =>
-    request<FirmwareUploadPrepare>(`/firmware/updates/${printerId}/prepare`),
+  prepareUpload: (printerId: number, version?: string) =>
+    request<FirmwareUploadPrepare>(
+      `/firmware/updates/${printerId}/prepare${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+    ),
 
-  startUpload: (printerId: number) =>
-    request<{ started: boolean; message: string }>(`/firmware/updates/${printerId}/upload`, {
-      method: 'POST',
-    }),
+  startUpload: (printerId: number, version?: string) =>
+    request<{ started: boolean; message: string }>(
+      `/firmware/updates/${printerId}/upload${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+      { method: 'POST' },
+    ),
 
   getUploadStatus: (printerId: number) =>
     request<FirmwareUploadStatus>(`/firmware/updates/${printerId}/upload/status`),
@@ -5042,6 +5523,11 @@ export const spoolbuddyApi = {
   getDevices: () =>
     request<SpoolBuddyDevice[]>('/spoolbuddy/devices'),
 
+  deleteDevice: (deviceId: string) =>
+    request<{ status: string; device_id: string }>(`/spoolbuddy/devices/${deviceId}`, {
+      method: 'DELETE',
+    }),
+
   tare: (deviceId: string) =>
     request<{ status: string }>(`/spoolbuddy/devices/${deviceId}/calibration/tare`, {
       method: 'POST',
@@ -5097,6 +5583,12 @@ export const spoolbuddyApi = {
     request<{ status: string }>(`/spoolbuddy/devices/${deviceId}/cancel-write`, {
       method: 'POST',
       body: '{}',
+    }),
+
+  systemCommand: (deviceId: string, command: 'reboot' | 'shutdown' | 'restart_daemon' | 'restart_browser') =>
+    request<{ status: string; command: string }>(`/spoolbuddy/devices/${deviceId}/system/command`, {
+      method: 'POST',
+      body: JSON.stringify({ command }),
     }),
 
   queueDiagnostics: (deviceId: string, type: 'nfc' | 'scale' | 'read_tag') =>

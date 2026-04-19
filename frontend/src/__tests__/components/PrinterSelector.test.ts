@@ -25,9 +25,12 @@ function makeFilament(overrides: Partial<LoadedFilament> & { globalTrayId: numbe
     colorName: 'White',
     amsId: 0,
     trayId: 0,
+    isHt: false,
+    isExternal: false,
     label: 'AMS1-T1',
     trayInfoIdx: '',
     extruderId: undefined,
+    remain: -1,
     ...overrides,
   };
 }
@@ -194,5 +197,53 @@ describe('autoMatchFilament', () => {
     const result = autoMatchFilament(req, filaments, new Set());
     expect(result).toBeDefined();
     expect(result!.globalTrayId).toBe(0);
+  });
+});
+
+// -- autoMatchFilament with preferLowest ------------------------------------
+
+describe('autoMatchFilament preferLowest', () => {
+  it('picks spool with lowest remain when enabled', () => {
+    const filaments = [
+      makeFilament({ globalTrayId: 0, type: 'PLA', color: '#FF0000', colorName: 'Red', remain: 80 }),
+      makeFilament({ globalTrayId: 1, type: 'PLA', color: '#FF0000', colorName: 'Red', remain: 30 }),
+    ];
+    const req = makeReq({ type: 'PLA', color: '#FF0000' });
+    const result = autoMatchFilament(req, filaments, new Set(), true);
+    expect(result).toBeDefined();
+    expect(result!.globalTrayId).toBe(1); // 30% < 80%
+  });
+
+  it('picks first spool when disabled (default behavior)', () => {
+    const filaments = [
+      makeFilament({ globalTrayId: 0, type: 'PLA', color: '#FF0000', colorName: 'Red', remain: 80 }),
+      makeFilament({ globalTrayId: 1, type: 'PLA', color: '#FF0000', colorName: 'Red', remain: 30 }),
+    ];
+    const req = makeReq({ type: 'PLA', color: '#FF0000' });
+    const result = autoMatchFilament(req, filaments, new Set(), false);
+    expect(result).toBeDefined();
+    expect(result!.globalTrayId).toBe(0); // First match
+  });
+
+  it('sorts unknown remain (-1) to end', () => {
+    const filaments = [
+      makeFilament({ globalTrayId: 0, type: 'PLA', color: '#FF0000', colorName: 'Red', remain: -1 }),
+      makeFilament({ globalTrayId: 1, type: 'PLA', color: '#FF0000', colorName: 'Red', remain: 50 }),
+    ];
+    const req = makeReq({ type: 'PLA', color: '#FF0000' });
+    const result = autoMatchFilament(req, filaments, new Set(), true);
+    expect(result).toBeDefined();
+    expect(result!.globalTrayId).toBe(1); // Known 50% over unknown
+  });
+
+  it('still respects nozzle constraint with preferLowest', () => {
+    const filaments = [
+      makeFilament({ globalTrayId: 0, type: 'PLA', color: '#FF0000', colorName: 'Red', remain: 10, extruderId: 1 }),
+      makeFilament({ globalTrayId: 1, type: 'PLA', color: '#FF0000', colorName: 'Red', remain: 80, extruderId: 0 }),
+    ];
+    const req = makeReq({ type: 'PLA', color: '#FF0000', nozzle_id: 0 });
+    const result = autoMatchFilament(req, filaments, new Set(), true);
+    expect(result).toBeDefined();
+    expect(result!.globalTrayId).toBe(1); // Only tray on correct nozzle
   });
 });

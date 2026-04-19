@@ -37,6 +37,7 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
           trayInfoIdx: tray.tray_info_idx || '',
           traySubBrands: tray.tray_sub_brands || '',
           extruderId: amsExtruderMap?.[String(amsUnit.id)],
+          remain: tray.remain ?? -1,
         });
       }
     });
@@ -61,6 +62,7 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
         trayInfoIdx: extTray.tray_info_idx || '',
         traySubBrands: extTray.tray_sub_brands || '',
         extruderId: hasDualNozzle ? (255 - trayId) : undefined,
+        remain: extTray.remain ?? -1,
       });
     }
   }
@@ -86,7 +88,8 @@ export function buildLoadedFilaments(printerStatus: PrinterStatus | undefined): 
  */
 export function computeAmsMapping(
   filamentReqs: { filaments: FilamentRequirement[] } | undefined,
-  printerStatus: PrinterStatus | undefined
+  printerStatus: PrinterStatus | undefined,
+  preferLowest?: boolean,
 ): number[] | undefined {
   if (!filamentReqs?.filaments || filamentReqs.filaments.length === 0) return undefined;
 
@@ -109,6 +112,15 @@ export function computeAmsMapping(
       available = available.filter((f) => f.extruderId === req.nozzle_id);
     }
 
+    // Sort by remaining filament (ascending) so .find() picks the lowest-remain spool first
+    if (preferLowest) {
+      available = [...available].sort((a, b) => {
+        const ra = a.remain >= 0 ? a.remain : 101;
+        const rb = b.remain >= 0 ? b.remain : 101;
+        return ra - rb;
+      });
+    }
+
     let idxMatch: LoadedFilament | undefined;
     let exactMatch: LoadedFilament | undefined;
     let similarMatch: LoadedFilament | undefined;
@@ -122,6 +134,13 @@ export function computeAmsMapping(
         idxMatch = idxMatches[0];
       } else if (idxMatches.length > 1) {
         // Multiple trays with same tray_info_idx - use color matching among them
+        if (preferLowest) {
+          idxMatches.sort((a, b) => {
+            const ra = a.remain >= 0 ? a.remain : 101;
+            const rb = b.remain >= 0 ? b.remain : 101;
+            return ra - rb;
+          });
+        }
         exactMatch = idxMatches.find(
           (f) =>
             f.type?.toUpperCase() === req.type?.toUpperCase() &&
@@ -212,6 +231,8 @@ export interface LoadedFilament {
   traySubBrands?: string;
   /** Extruder ID for dual-nozzle printers (0=right, 1=left) */
   extruderId?: number;
+  /** Remaining filament percentage (0-100), -1 = unknown */
+  remain: number;
 }
 
 /**
@@ -285,7 +306,8 @@ export function useLoadedFilaments(
 export function useFilamentMapping(
   filamentReqs: FilamentRequirementsResponse | undefined,
   printerStatus: PrinterStatus | undefined,
-  manualMappings: Record<number, number>
+  manualMappings: Record<number, number>,
+  preferLowest?: boolean,
 ): UseFilamentMappingResult {
   const loadedFilaments = useLoadedFilaments(printerStatus);
 
@@ -345,6 +367,15 @@ export function useFilamentMapping(
         available = available.filter((f) => f.extruderId === req.nozzle_id);
       }
 
+      // Sort by remaining filament (ascending) so .find() picks the lowest-remain spool first
+      if (preferLowest) {
+        available = [...available].sort((a, b) => {
+          const ra = a.remain >= 0 ? a.remain : 101;
+          const rb = b.remain >= 0 ? b.remain : 101;
+          return ra - rb;
+        });
+      }
+
       let idxMatch: LoadedFilament | undefined;
       let exactMatch: LoadedFilament | undefined;
       let similarMatch: LoadedFilament | undefined;
@@ -358,6 +389,13 @@ export function useFilamentMapping(
           idxMatch = idxMatches[0];
         } else if (idxMatches.length > 1) {
           // Multiple trays with same tray_info_idx - use color matching among them
+          if (preferLowest) {
+            idxMatches.sort((a, b) => {
+              const ra = a.remain >= 0 ? a.remain : 101;
+              const rb = b.remain >= 0 ? b.remain : 101;
+              return ra - rb;
+            });
+          }
           exactMatch = idxMatches.find(
             (f) =>
               f.type?.toUpperCase() === req.type?.toUpperCase() &&
@@ -431,7 +469,7 @@ export function useFilamentMapping(
         isManual: false,
       };
     });
-  }, [filamentReqs, loadedFilaments, manualMappings]);
+  }, [filamentReqs, loadedFilaments, manualMappings, preferLowest]);
 
   // Build AMS mapping from matched filaments
   // Format: array matching 3MF filament slot structure

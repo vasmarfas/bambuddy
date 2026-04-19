@@ -103,18 +103,14 @@ def _apply_log_level(debug: bool):
     for handler in root_logger.handlers:
         handler.setLevel(new_level)
 
-    # Also adjust third-party loggers
-    if debug:
-        logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-        logging.getLogger("aiosqlite").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.DEBUG)
-        logging.getLogger("httpx").setLevel(logging.DEBUG)
-        logging.getLogger("paho.mqtt").setLevel(logging.DEBUG)
-    else:
-        logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.WARNING)
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("paho.mqtt").setLevel(logging.WARNING)
+    # Also adjust third-party loggers. httpx/httpcore stay pinned to WARNING
+    # even in debug mode — at INFO/DEBUG they log full request URLs, which
+    # leaks secrets embedded in webhook URLs (Discord, generic webhooks, etc.).
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("paho.mqtt").setLevel(logging.DEBUG if debug else logging.WARNING)
 
     logger.info("Log level changed to %s", "DEBUG" if debug else "INFO")
 
@@ -560,7 +556,10 @@ async def _collect_support_info() -> dict:
         except Exception:
             logger.debug("Failed to collect virtual printer info", exc_info=True)
 
-        # Non-sensitive settings
+        # All settings — sensitive values are redacted rather than dropped so
+        # new settings automatically show up in support bundles without a code
+        # change. The value is replaced with "[REDACTED]" but the key is kept
+        # so we can still see which integrations are configured.
         result = await db.execute(select(Settings))
         all_settings = result.scalars().all()
         sensitive_keys = {
@@ -581,12 +580,17 @@ async def _collect_support_info() -> dict:
             "url",
             "path",  # Filesystem paths may contain usernames
             "config",  # URLs may contain IPs, configs may have embedded secrets
+            "_ip",  # IP address fields (e.g. virtual_printer_remote_interface_ip)
+            "host",
+            "credential",
         }
         for s in all_settings:
-            # Skip sensitive settings
-            if any(sensitive in s.key.lower() for sensitive in sensitive_keys):
-                continue
-            info["settings"][s.key] = s.value
+            key_lower = s.key.lower()
+            if any(sensitive in key_lower for sensitive in sensitive_keys):
+                # Preserve shape: mark presence without leaking the value
+                info["settings"][s.key] = "[REDACTED]" if s.value else ""
+            else:
+                info["settings"][s.key] = s.value
 
         # Notification providers (anonymized — type/enabled/error status only)
         try:
@@ -606,22 +610,37 @@ async def _collect_support_info() -> dict:
 
         # Database health
         try:
-            result = await db.execute(text("PRAGMA journal_mode"))
-            journal_mode = result.scalar()
-            result = await db.execute(text("PRAGMA quick_check"))
-            quick_check = result.scalar()
+            from backend.app.core.db_dialect import is_sqlite
 
-            db_path = settings.base_dir / "bambuddy.db"
-            db_size = db_path.stat().st_size if db_path.exists() else 0
-            wal_path = settings.base_dir / "bambuddy.db-wal"
-            wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+            if is_sqlite():
+                result = await db.execute(text("PRAGMA journal_mode"))
+                journal_mode = result.scalar()
+                result = await db.execute(text("PRAGMA quick_check"))
+                quick_check = result.scalar()
 
-            info["database_health"] = {
-                "journal_mode": journal_mode,
-                "quick_check": quick_check,
-                "db_size_bytes": db_size,
-                "wal_size_bytes": wal_size,
-            }
+                db_path = settings.base_dir / "bambuddy.db"
+                db_size = db_path.stat().st_size if db_path.exists() else 0
+                wal_path = settings.base_dir / "bambuddy.db-wal"
+                wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+
+                info["database_health"] = {
+                    "backend": "sqlite",
+                    "journal_mode": journal_mode,
+                    "quick_check": quick_check,
+                    "db_size_bytes": db_size,
+                    "wal_size_bytes": wal_size,
+                }
+            else:
+                result = await db.execute(text("SELECT version()"))
+                pg_version = result.scalar()
+                result = await db.execute(text("SELECT pg_database_size(current_database())"))
+                db_size = result.scalar() or 0
+
+                info["database_health"] = {
+                    "backend": "postgresql",
+                    "version": pg_version,
+                    "db_size_bytes": db_size,
+                }
         except Exception:
             logger.debug("Failed to collect database health info", exc_info=True)
 
@@ -655,6 +674,44 @@ async def _collect_support_info() -> dict:
         }
     except Exception:
         logger.debug("Failed to collect MQTT relay info", exc_info=True)
+
+    # SpoolBuddy devices (anonymized — no hostnames, IPs or device IDs)
+    try:
+        async with async_session() as db:
+            from backend.app.models.spoolbuddy_device import SpoolBuddyDevice
+
+            result = await db.execute(select(SpoolBuddyDevice))
+            devices = result.scalars().all()
+            info["integrations"]["spoolbuddy"] = {
+                "device_count": len(devices),
+                "online_count": sum(
+                    1
+                    for d in devices
+                    if d.last_seen
+                    and (datetime.now(tz=timezone.utc) - d.last_seen.replace(tzinfo=timezone.utc)).total_seconds() < 30
+                ),
+                "devices": [
+                    {
+                        "index": i + 1,
+                        "firmware_version": d.firmware_version,
+                        "has_nfc": d.has_nfc,
+                        "has_scale": d.has_scale,
+                        "nfc_reader_type": d.nfc_reader_type,
+                        "nfc_connection": d.nfc_connection,
+                        "has_backlight": d.has_backlight,
+                        "nfc_ok": d.nfc_ok,
+                        "scale_ok": d.scale_ok,
+                        "uptime_s": d.uptime_s,
+                        "calibration_factor": d.calibration_factor,
+                        "tare_offset": d.tare_offset,
+                        "last_calibrated_at": d.last_calibrated_at.isoformat() if d.last_calibrated_at else None,
+                        "update_status": d.update_status,
+                    }
+                    for i, d in enumerate(devices)
+                ],
+            }
+    except Exception:
+        logger.debug("Failed to collect SpoolBuddy info", exc_info=True)
 
     # Home Assistant (check ha_enabled setting)
     try:

@@ -70,6 +70,7 @@ async def test_engine():
         ams_label,
         api_key,
         archive,
+        auth_ephemeral,
         color_catalog,
         external_link,
         filament,
@@ -78,17 +79,25 @@ async def test_engine():
         maintenance,
         notification,
         notification_template,
+        oidc_provider,
         print_queue,
         printer,
         project,
+        project_bom,
         settings,
+        slot_preset,
         smart_plug,
+        smart_plug_energy_snapshot,  # noqa: F401
         spool,
         spool_assignment,
         spool_catalog,
+        spool_k_profile,
         spool_usage_history,
+        spoolbuddy_device,
         user,
         user_email_pref,
+        user_otp_code,
+        user_totp,
         virtual_printer,
     )
 
@@ -358,6 +367,12 @@ def smart_plug_factory(db_session):
             defaults["mqtt_state_topic"] = kwargs.get("mqtt_state_topic")
             defaults["mqtt_state_path"] = kwargs.get("mqtt_state_path")
             defaults["mqtt_state_on_value"] = kwargs.get("mqtt_state_on_value")
+            defaults["ip_address"] = None
+            defaults["ha_entity_id"] = None
+        elif plug_type == "rest":
+            defaults["rest_on_url"] = kwargs.get("rest_on_url", "http://192.168.1.100/api/plug/on")
+            defaults["rest_off_url"] = kwargs.get("rest_off_url", "http://192.168.1.100/api/plug/off")
+            defaults["rest_method"] = kwargs.get("rest_method", "POST")
             defaults["ip_address"] = None
             defaults["ha_entity_id"] = None
         else:

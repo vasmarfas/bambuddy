@@ -40,6 +40,12 @@ class PrintQueueItemCreate(BaseModel):
     layer_inspect: bool = False
     timelapse: bool = False
     use_ams: bool = True
+    # Auto-print G-code injection
+    gcode_injection: bool = False
+    # Batch: create multiple copies (creates a batch if > 1)
+    quantity: int = 1
+    # Project to associate the resulting archive with
+    project_id: int | None = None
 
 
 class PrintQueueItemUpdate(BaseModel):
@@ -61,6 +67,8 @@ class PrintQueueItemUpdate(BaseModel):
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    # Auto-print G-code injection
+    gcode_injection: bool | None = None
 
 
 class PrintQueueItemResponse(BaseModel):
@@ -111,6 +119,16 @@ class PrintQueueItemResponse(BaseModel):
     created_by_id: int | None = None
     created_by_username: str | None = None
 
+    # Batch grouping
+    batch_id: int | None = None
+    batch_name: str | None = None
+
+    # Shortest-job-first scheduling
+    been_jumped: bool = False
+
+    # Auto-print G-code injection
+    gcode_injection: bool = False
+
     class Config:
         from_attributes = True
 
@@ -141,6 +159,8 @@ class PrintQueueBulkUpdate(BaseModel):
     layer_inspect: bool | None = None
     timelapse: bool | None = None
     use_ams: bool | None = None
+    # Auto-print G-code injection
+    gcode_injection: bool | None = None
 
 
 class PrintQueueBulkUpdateResponse(BaseModel):
@@ -149,3 +169,26 @@ class PrintQueueBulkUpdateResponse(BaseModel):
     updated_count: int
     skipped_count: int  # Items that were not pending
     message: str
+
+
+class PrintBatchResponse(BaseModel):
+    """Response for a print batch with progress stats."""
+
+    id: int
+    name: str
+    archive_id: int | None = None
+    library_file_id: int | None = None
+    quantity: int
+    status: str
+    created_at: UTCDatetime
+    created_by_id: int | None = None
+    created_by_username: str | None = None
+    # Derived counts
+    pending_count: int = 0
+    printing_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    cancelled_count: int = 0
+
+    class Config:
+        from_attributes = True

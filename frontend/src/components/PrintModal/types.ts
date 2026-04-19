@@ -32,6 +32,8 @@ export interface PrintModalProps {
   onClose: () => void;
   /** Handler for successful operation */
   onSuccess?: () => void;
+  /** Project ID to associate the resulting archive with (only when triggered from project view) */
+  projectId?: number;
 }
 
 /**
@@ -69,6 +71,10 @@ export interface ScheduleOptions {
   scheduledTime: string;
   requirePreviousSuccess: boolean;
   autoOffAfter: boolean;
+  gcodeInjection: boolean;
+  staggerEnabled: boolean;
+  staggerGroupSize: number;
+  staggerIntervalMinutes: number;
 }
 
 /**
@@ -79,6 +85,10 @@ export const DEFAULT_SCHEDULE_OPTIONS: ScheduleOptions = {
   scheduledTime: '',
   requirePreviousSuccess: false,
   autoOffAfter: false,
+  gcodeInjection: false,
+  staggerEnabled: false,
+  staggerGroupSize: 2,
+  staggerIntervalMinutes: 5,
 };
 
 /**
@@ -204,4 +214,10 @@ export interface ScheduleOptionsProps {
   timeFormat?: 'system' | '12h' | '24h';
   /** Whether the user has permission to control printers (for auto power off) */
   canControlPrinter?: boolean;
+  /** Show stagger options (only when multiple printers selected in queue mode) */
+  showStagger?: boolean;
+  /** Number of selected printers (for stagger preview) */
+  printerCount?: number;
+  /** Whether G-code snippets are configured in settings */
+  hasGcodeSnippets?: boolean;
 }

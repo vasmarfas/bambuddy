@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame } from 'lucide-react';
+import { Loader2, Plus, Plug, AlertTriangle, RotateCcw, Bell, Download, RefreshCw, ExternalLink, Globe, Droplets, Thermometer, FileText, Edit2, Send, CheckCircle, XCircle, History, Trash2, Zap, TrendingUp, Calendar, DollarSign, Power, PowerOff, Key, Copy, Database, X, Shield, Printer, Cylinder, Wifi, Home, Video, Users, Lock, Unlock, ChevronDown, Save, Mail, Flame, Layers, ListOrdered, Code, Search, Scale, Settings as SettingsIcon, ScanEye } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client';
@@ -7,7 +7,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { formatDateOnly } from '../utils/date';
 import { getCurrencySymbol, SUPPORTED_CURRENCIES } from '../utils/currency';
 import type { AppSettings, AppSettingsUpdate, SmartPlug, SmartPlugStatus, NotificationProvider, NotificationTemplate, UpdateStatus, GitHubBackupStatus, CloudAuthStatus, UserCreate, UserUpdate, UserResponse, StorageUsageResponse } from '../api/client';
-import { Card, CardContent, CardHeader } from '../components/Card';
+import { Card, CardContent, CardDensityProvider, CardHeader } from '../components/Card';
+import { Collapsible } from '../components/Collapsible';
 import { Button } from '../components/Button';
 import { SmartPlugCard } from '../components/SmartPlugCard';
 import { AddSmartPlugModal } from '../components/AddSmartPlugModal';
@@ -22,21 +23,93 @@ import { SpoolCatalogSettings } from '../components/SpoolCatalogSettings';
 import { ColorCatalogSettings } from '../components/ColorCatalogSettings';
 import { ExternalLinksSettings } from '../components/ExternalLinksSettings';
 import { VirtualPrinterList } from '../components/VirtualPrinterList';
+import { SpoolBuddySettings } from '../components/SpoolBuddySettings';
 import { GitHubBackupSettings } from '../components/GitHubBackupSettings';
+import { FailureDetectionSettings } from '../components/FailureDetectionSettings';
 import { EmailSettings } from '../components/EmailSettings';
+import { LDAPSettings } from '../components/LDAPSettings';
+import { TwoFactorSettings } from '../components/TwoFactorSettings';
+import { OIDCProviderSettings } from '../components/OIDCProviderSettings';
 import { APIBrowser } from '../components/APIBrowser';
 import { Toggle } from '../components/Toggle';
-import { virtualPrinterApi } from '../api/client';
+import { virtualPrinterApi, spoolbuddyApi } from '../api/client';
 import { defaultNavItems, getDefaultView, setDefaultView } from '../components/Layout';
 import { availableLanguages } from '../i18n';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme, type ThemeStyle, type DarkBackground, type LightBackground, type ThemeAccent } from '../contexts/ThemeContext';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Palette } from 'lucide-react';
+import { registerSettingsSearch, getSettingsSearchEntries } from '../lib/settingsSearch';
 
-const validTabs = ['general', 'network', 'plugs', 'notifications', 'filament', 'apikeys', 'virtual-printer', 'users', 'backup'] as const;
+const validTabs = ['general', 'plugs', 'notifications', 'queue', 'filament', 'network', 'apikeys', 'virtual-printer', 'spoolbuddy', 'failure-detection', 'users', 'backup'] as const;
 type TabType = typeof validTabs[number];
-type UsersSubTab = 'users' | 'email';
+type UsersSubTab = 'users' | 'email' | 'ldap' | 'twofa' | 'oidc';
+
+// Cross-tab search registrations for cards rendered inline in this file.
+// Adding a new settings card? Register it here (or, if the card lives in its
+// own component file, call registerSettingsSearch at that file's module scope).
+registerSettingsSearch({ labelKey: 'settings.general', tab: 'general', keywords: 'language date time format printer model printers cards', anchor: 'card-general' });
+registerSettingsSearch({ labelKey: 'settings.appearance', tab: 'general', keywords: 'theme dark light mode colors', anchor: 'card-appearance' });
+registerSettingsSearch({ labelKey: 'settings.archiveSettings', tab: 'general', keywords: 'archive auto save thumbnails captures', anchor: 'card-archive' });
+registerSettingsSearch({ labelKey: 'settings.camera', tab: 'general', keywords: 'camera external video stream', anchor: 'card-camera' });
+registerSettingsSearch({ labelKey: 'settings.costTracking', tab: 'general', keywords: 'currency filament cost energy kwh price', anchor: 'card-cost' });
+registerSettingsSearch({ labelKey: 'settings.fileManager', tab: 'general', keywords: 'file manager archive mode disk warning storage', anchor: 'card-filemanager' });
+registerSettingsSearch({ labelKey: 'settings.updates', tab: 'general', keywords: 'updates version firmware beta check', anchor: 'card-updates' });
+registerSettingsSearch({ labelKey: 'settings.dataManagement', tab: 'general', keywords: 'data reset clear logs notifications preferences', anchor: 'card-data' });
+registerSettingsSearch({ labelKey: 'settings.smartPlugs', tab: 'plugs', keywords: 'smart plug energy power automation tapo kasa tplink shelly', anchor: 'card-plugs' });
+registerSettingsSearch({ labelKey: 'settings.providers', tab: 'notifications', keywords: 'telegram discord email notification providers webhook', anchor: 'card-providers' });
+registerSettingsSearch({ labelKey: 'settings.messageTemplates', tab: 'notifications', keywords: 'message templates notification text edit', anchor: 'card-templates' });
+registerSettingsSearch({ labelKey: 'settings.defaultPrintOptions', labelFallback: 'Default Print Options', tab: 'queue', keywords: 'print bed leveling flow calibration vibration first layer timelapse', anchor: 'card-print-options' });
+registerSettingsSearch({ labelKey: 'settings.staggeredStart', labelFallback: 'Staggered Start', tab: 'queue', keywords: 'staggered batch delay start queue group', anchor: 'card-staggered' });
+registerSettingsSearch({ labelKey: 'settings.plateClear', labelFallback: 'Plate-Clear Confirmation', tab: 'queue', keywords: 'plate clear confirm auto queue', anchor: 'card-plate' });
+registerSettingsSearch({ labelKey: 'settings.gcodeInjection', labelFallback: 'G-code Injection', tab: 'queue', keywords: 'gcode injection start end autoprint farmloop swapmod autoclear printflow', anchor: 'card-gcode' });
+registerSettingsSearch({ labelKey: 'settings.queueDrying', tab: 'queue', keywords: 'drying presets temperature time humidity ams', anchor: 'card-drying' });
+registerSettingsSearch({ labelKey: 'settings.filamentChecks', tab: 'filament', keywords: 'filament check warning runout remaining', anchor: 'card-filamentchecks' });
+registerSettingsSearch({ labelKey: 'settings.printModal', tab: 'filament', keywords: 'print modal custom mapping', anchor: 'card-printmodal' });
+registerSettingsSearch({ labelKey: 'settings.amsDisplayThresholds', tab: 'filament', keywords: 'ams humidity temperature threshold history retention', anchor: 'card-amsthresholds' });
+registerSettingsSearch({ labelKey: 'settings.externalUrl', tab: 'network', keywords: 'external url reverse proxy public notification link', anchor: 'card-externalurl' });
+registerSettingsSearch({ labelKey: 'settings.ftpRetry', tab: 'network', keywords: 'ftp retry upload retries backoff', anchor: 'card-ftpretry' });
+registerSettingsSearch({ labelKey: 'settings.homeAssistant', tab: 'network', keywords: 'home assistant ha hass mqtt integration', anchor: 'card-ha' });
+registerSettingsSearch({ labelKey: 'settings.mqttPublishing', tab: 'network', keywords: 'mqtt publish broker topic', anchor: 'card-mqtt' });
+registerSettingsSearch({ labelKey: 'settings.prometheusMetrics', tab: 'network', keywords: 'prometheus metrics grafana monitoring bearer token', anchor: 'card-prometheus' });
+registerSettingsSearch({ labelKey: 'settings.createNewApiKey', tab: 'apikeys', keywords: 'api key create permission scope', anchor: 'card-createapi' });
+registerSettingsSearch({ labelKey: 'settings.webhookEndpoints', tab: 'apikeys', keywords: 'webhook endpoint post http', anchor: 'card-webhooks' });
+registerSettingsSearch({ labelKey: 'settings.apiBrowser', tab: 'apikeys', keywords: 'api browser endpoint documentation test', anchor: 'card-apibrowser' });
+registerSettingsSearch({ labelKey: 'settings.tabs.virtualPrinter', tab: 'virtual-printer', keywords: 'virtual printer proxy archive slicer bambustudio orcaslicer ip bind', anchor: 'card-vp' });
+registerSettingsSearch({ labelKey: 'settings.tabs.spoolbuddy', tab: 'spoolbuddy', keywords: 'spoolbuddy device scale nfc rfid kiosk unregister', anchor: 'card-spoolbuddy' });
+registerSettingsSearch({ labelKey: 'settings.currentUser', tab: 'users', subTab: 'users', keywords: 'current user profile password change', anchor: 'card-currentuser' });
+registerSettingsSearch({ labelKey: 'settings.users', tab: 'users', subTab: 'users', keywords: 'users accounts list', anchor: 'card-users' });
+registerSettingsSearch({ labelKey: 'settings.groups', tab: 'users', subTab: 'users', keywords: 'groups roles permissions administrators operators viewers', anchor: 'card-groups' });
+registerSettingsSearch({ labelKey: 'settings.email.smtpSettings', labelFallback: 'SMTP Configuration', tab: 'users', subTab: 'email', keywords: 'smtp email send server port password auth starttls ssl', anchor: 'card-smtp' });
+registerSettingsSearch({ labelKey: 'settings.ldap.title', labelFallback: 'LDAP Authentication', tab: 'users', subTab: 'ldap', keywords: 'ldap active directory ad authentication bind dn search base group mapping', anchor: 'card-ldap' });
+registerSettingsSearch({ labelKey: 'settings.tabs.backup', tab: 'backup', keywords: 'backup github restore download cloud sync profiles archives', anchor: 'card-backup' });
+// Sidebar Links (external links settings is rendered in the General tab)
+registerSettingsSearch({ labelKey: 'externalLinks.title', labelFallback: 'Sidebar Links', tab: 'general', keywords: 'sidebar links external custom navigation url add', anchor: 'card-sidebar-links' });
+// Filament tab — integrations
+registerSettingsSearch({ labelKey: 'settings.filamentTracking', tab: 'filament', keywords: 'spoolman filament tracking inventory sync remote integration', anchor: 'card-spoolman' });
+registerSettingsSearch({ labelKey: 'settings.catalog.spoolCatalog', labelFallback: 'Spool Catalog', tab: 'filament', keywords: 'spool catalog entries brand material reset import export', anchor: 'card-spool-catalog' });
+registerSettingsSearch({ labelKey: 'settings.colorCatalog.title', labelFallback: 'Color Catalog', tab: 'filament', keywords: 'color catalog hex swatch palette sync reset', anchor: 'card-color-catalog' });
+// Failure detection sub-cards
+registerSettingsSearch({ labelKey: 'settings.tabs.failureDetection', labelFallback: 'Failure Detection', tab: 'failure-detection', keywords: 'failure detection ai ml obico spaghetti detect monitoring', anchor: 'card-fd-ml' });
+registerSettingsSearch({ labelKey: 'failureDetection.perPrinterTitle', labelFallback: 'Per-Printer Settings', tab: 'failure-detection', keywords: 'failure detection per printer enable per-printer sensitivity', anchor: 'card-fd-perprinter' });
+registerSettingsSearch({ labelKey: 'failureDetection.statusTitle', labelFallback: 'Detection Status', tab: 'failure-detection', keywords: 'failure detection status running connection', anchor: 'card-fd-status' });
+registerSettingsSearch({ labelKey: 'failureDetection.historyTitle', labelFallback: 'Detection History', tab: 'failure-detection', keywords: 'failure detection history log events', anchor: 'card-fd-history' });
+// Email auth sub-cards (subTab=email)
+registerSettingsSearch({ labelKey: 'settings.email.advancedAuth', labelFallback: 'Advanced Email Authentication', tab: 'users', subTab: 'email', keywords: 'email authentication advanced password reset self-service forgot', anchor: 'card-email-advanced-auth' });
+registerSettingsSearch({ labelKey: 'settings.email.testConnection', labelFallback: 'Test SMTP Connection', tab: 'users', subTab: 'email', keywords: 'email smtp test connection send check', anchor: 'card-email-test' });
+// Two-Factor sub-cards (subTab=twofa)
+registerSettingsSearch({ labelKey: 'settings.twoFa.totpTitle', labelFallback: 'Authenticator App (TOTP)', tab: 'users', subTab: 'twofa', keywords: 'two factor 2fa totp authenticator app google authy otp', anchor: 'card-2fa-totp' });
+registerSettingsSearch({ labelKey: 'settings.twoFa.emailOtpTitle', labelFallback: 'Email One-Time Codes', tab: 'users', subTab: 'twofa', keywords: 'two factor 2fa email otp one time code', anchor: 'card-2fa-emailotp' });
+registerSettingsSearch({ labelKey: 'settings.twoFa.linkedAccounts', labelFallback: 'Linked Accounts', tab: 'users', subTab: 'twofa', keywords: 'two factor 2fa linked accounts sso oidc provider google github', anchor: 'card-2fa-linked' });
+// OIDC / SSO (subTab=oidc)
+registerSettingsSearch({ labelKey: 'settings.oidc.title', labelFallback: 'Single Sign-On (OIDC)', tab: 'users', subTab: 'oidc', keywords: 'sso oidc openid single sign-on pocketid authentik keycloak google okta azure provider', anchor: 'card-oidc' });
+// LDAP server config card (complements existing card-ldap)
+registerSettingsSearch({ labelKey: 'settings.ldap.serverConfig', labelFallback: 'LDAP Server Configuration', tab: 'users', subTab: 'ldap', keywords: 'ldap server url bind dn user search base group filter tls', anchor: 'card-ldap-server' });
+// Backup sub-cards
+registerSettingsSearch({ labelKey: 'backup.githubBackup', labelFallback: 'GitHub Backup', tab: 'backup', keywords: 'github backup cloud remote sync profiles token', anchor: 'card-backup-github' });
+registerSettingsSearch({ labelKey: 'backup.history', labelFallback: 'Backup History', tab: 'backup', keywords: 'backup history log runs github commits', anchor: 'card-backup-history' });
+registerSettingsSearch({ labelKey: 'backup.localBackup', labelFallback: 'Local Backup', tab: 'backup', keywords: 'local backup download zip manual export', anchor: 'card-backup-local' });
+registerSettingsSearch({ labelKey: 'backup.scheduledBackup', labelFallback: 'Scheduled Backups', tab: 'backup', keywords: 'scheduled backup automatic hourly daily weekly retention local path', anchor: 'card-backup-scheduled' });
 
 const STORAGE_CATEGORY_COLORS: Record<string, string> = {
   database: 'bg-blue-600',
@@ -76,7 +149,7 @@ export function SettingsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
-  const { authEnabled, user, refreshAuth, hasPermission } = useAuth();
+  const { authEnabled, user, isAdmin, refreshAuth, hasPermission } = useAuth();
   const {
     mode,
     darkStyle, darkBackground, darkAccent,
@@ -90,6 +163,8 @@ export function SettingsPage() {
   const [showNotificationModal, setShowNotificationModal] = useState(false);
   const [editingProvider, setEditingProvider] = useState<NotificationProvider | null>(null);
   const [editingTemplate, setEditingTemplate] = useState<NotificationTemplate | null>(null);
+  const [templateFilter, setTemplateFilter] = useState('');
+  const [settingsSearch, setSettingsSearch] = useState('');
   const [showLogViewer, setShowLogViewer] = useState(false);
   const [defaultView, setDefaultViewState] = useState<string>(getDefaultView());
 
@@ -352,6 +427,23 @@ export function SettingsPage() {
   });
   const virtualPrinterRunning = virtualPrinterSettings?.status?.running ?? false;
 
+  // SpoolBuddy devices for tab indicator
+  const { data: spoolbuddyDevices } = useQuery({
+    queryKey: ['spoolbuddy-devices'],
+    queryFn: () => spoolbuddyApi.getDevices(),
+    refetchInterval: 15000,
+  });
+  const spoolbuddyDeviceCount = spoolbuddyDevices?.length ?? 0;
+  const spoolbuddyAnyOnline = spoolbuddyDevices?.some((d) => d.online) ?? false;
+
+  // Obico failure-detection service status for tab indicator
+  const { data: obicoStatus } = useQuery({
+    queryKey: ['obico-status'],
+    queryFn: api.getObicoStatus,
+    refetchInterval: 15000,
+  });
+  const obicoActive = !!(obicoStatus?.is_running && obicoStatus?.enabled);
+
   const { data: ffmpegStatus } = useQuery({
     queryKey: ['ffmpeg-status'],
     queryFn: api.checkFfmpeg,
@@ -405,6 +497,23 @@ export function SettingsPage() {
   const { data: advancedAuthStatus = { advanced_auth_enabled: false, smtp_configured: false } } = useQuery({
     queryKey: ['advancedAuthStatus'],
     queryFn: () => api.getAdvancedAuthStatus(),
+  });
+
+  const { data: ldapStatus } = useQuery({
+    queryKey: ['ldapStatus'],
+    queryFn: () => api.getLDAPStatus(),
+  });
+
+  // Tab-indicator queries: green bullet when 2FA is enabled for the current
+  // user, or when at least one OIDC provider is configured and enabled.
+  const { data: twoFAStatus } = useQuery({
+    queryKey: ['twoFAStatus'],
+    queryFn: () => api.get2FAStatus(),
+  });
+  const { data: oidcProvidersAll = [] } = useQuery({
+    queryKey: ['oidcProvidersAll'],
+    queryFn: () => api.getOIDCProvidersAll(),
+    enabled: isAdmin,
   });
 
   // User management queries and mutations
@@ -662,6 +771,7 @@ export function SettingsPage() {
 
   // Ref for debounce timeout
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingGcodeSnippetsRef = useRef<string | null>(null);
   const isSavingRef = useRef(false);
   const isInitialLoadRef = useRef(true);
 
@@ -741,6 +851,7 @@ export function SettingsPage() {
       settings.ams_temp_fair !== localSettings.ams_temp_fair ||
       settings.ams_history_retention_days !== localSettings.ams_history_retention_days ||
       settings.disable_filament_warnings !== localSettings.disable_filament_warnings ||
+      settings.prefer_lowest_filament !== localSettings.prefer_lowest_filament ||
       (settings.queue_drying_enabled ?? false) !== (localSettings.queue_drying_enabled ?? false) ||
       (settings.queue_drying_block ?? false) !== (localSettings.queue_drying_block ?? false) ||
       (settings.ambient_drying_enabled ?? false) !== (localSettings.ambient_drying_enabled ?? false) ||
@@ -770,7 +881,15 @@ export function SettingsPage() {
       (settings.preferred_slicer ?? 'bambu_studio') !== (localSettings.preferred_slicer ?? 'bambu_studio') ||
       settings.prometheus_enabled !== localSettings.prometheus_enabled ||
       settings.prometheus_token !== localSettings.prometheus_token ||
-      (settings.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true);
+      (settings.user_notifications_enabled ?? true) !== (localSettings.user_notifications_enabled ?? true) ||
+      (settings.default_bed_levelling ?? true) !== (localSettings.default_bed_levelling ?? true) ||
+      (settings.default_flow_cali ?? false) !== (localSettings.default_flow_cali ?? false) ||
+      (settings.default_vibration_cali ?? true) !== (localSettings.default_vibration_cali ?? true) ||
+      (settings.default_layer_inspect ?? false) !== (localSettings.default_layer_inspect ?? false) ||
+      (settings.default_timelapse ?? false) !== (localSettings.default_timelapse ?? false) ||
+      (settings.stagger_group_size ?? 2) !== (localSettings.stagger_group_size ?? 2) ||
+      (settings.stagger_interval_minutes ?? 5) !== (localSettings.stagger_interval_minutes ?? 5) ||
+      (settings.require_plate_clear ?? false) !== (localSettings.require_plate_clear ?? false);
 
     if (!hasChanges) {
       return;
@@ -813,6 +932,7 @@ export function SettingsPage() {
         ams_temp_fair: localSettings.ams_temp_fair,
         ams_history_retention_days: localSettings.ams_history_retention_days,
         disable_filament_warnings: localSettings.disable_filament_warnings,
+        prefer_lowest_filament: localSettings.prefer_lowest_filament,
         queue_drying_enabled: localSettings.queue_drying_enabled,
         queue_drying_block: localSettings.queue_drying_block,
         ambient_drying_enabled: localSettings.ambient_drying_enabled,
@@ -843,6 +963,14 @@ export function SettingsPage() {
         prometheus_enabled: localSettings.prometheus_enabled,
         prometheus_token: localSettings.prometheus_token,
         user_notifications_enabled: localSettings.user_notifications_enabled,
+        default_bed_levelling: localSettings.default_bed_levelling,
+        default_flow_cali: localSettings.default_flow_cali,
+        default_vibration_cali: localSettings.default_vibration_cali,
+        default_layer_inspect: localSettings.default_layer_inspect,
+        default_timelapse: localSettings.default_timelapse,
+        stagger_group_size: localSettings.stagger_group_size,
+        stagger_interval_minutes: localSettings.stagger_interval_minutes,
+        require_plate_clear: localSettings.require_plate_clear,
       };
       updateMutation.mutate(settingsToSave);
     }, 500);
@@ -938,28 +1066,108 @@ export function SettingsPage() {
     );
   }
 
+  // Cross-tab search is powered by the module-level registry in lib/settingsSearch.
+  // Resolve i18n labels here so language changes take effect without re-registering.
+  const searchIndex = getSettingsSearchEntries().map(e => ({
+    ...e,
+    label: t(e.labelKey, e.labelFallback ?? e.labelKey),
+  }));
+
+  const searchQuery = settingsSearch.trim().toLowerCase();
+  const searchResults = searchQuery
+    ? searchIndex.filter(
+        e =>
+          e.label.toLowerCase().includes(searchQuery) ||
+          e.keywords.toLowerCase().includes(searchQuery)
+      ).slice(0, 8)
+    : [];
+
+  const jumpToSetting = (entry: typeof searchIndex[number]) => {
+    handleTabChange(entry.tab as TabType);
+    if (entry.subTab) {
+      setUsersSubTab(entry.subTab as UsersSubTab);
+    }
+    setSettingsSearch('');
+    // Scroll to the card after the tab has rendered
+    setTimeout(() => {
+      const el = document.getElementById(entry.anchor);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        el.classList.add('ring-2', 'ring-bambu-green');
+        setTimeout(() => el.classList.remove('ring-2', 'ring-bambu-green'), 1500);
+      }
+    }, 50);
+  };
+
   return (
-    <div className="p-4 md:p-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
-        <p className="text-bambu-gray">{t('settings.configureBambuddy')}</p>
+    <CardDensityProvider density="dense">
+    <div className="p-4 md:p-6">
+      <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-2xl font-bold text-white">{t('settings.title')}</h1>
+          <p className="text-sm text-bambu-gray hidden md:block">{t('settings.configureBambuddy')}</p>
+        </div>
+        {/* Cross-tab search */}
+        <div className="relative sm:w-72">
+          <Search className="w-4 h-4 text-bambu-gray absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            value={settingsSearch}
+            onChange={(e) => setSettingsSearch(e.target.value)}
+            placeholder={t('settings.searchPlaceholder', 'Search settings…')}
+            className="w-full pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+          />
+          {settingsSearch && (
+            <button
+              onClick={() => setSettingsSearch('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-bambu-gray hover:text-white"
+              aria-label="Clear"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {searchResults.length > 0 && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl z-30 overflow-hidden">
+              {searchResults.map((entry) => (
+                <button
+                  key={entry.anchor}
+                  onClick={() => jumpToSetting(entry)}
+                  className="w-full px-3 py-2 text-left hover:bg-bambu-dark-tertiary transition-colors border-b border-bambu-dark-tertiary last:border-b-0"
+                >
+                  <p className="text-sm text-white">{entry.label}</p>
+                  <p className="text-xs text-bambu-gray">
+                    {t(`settings.tabs.${entry.tab === 'virtual-printer' ? 'virtualPrinter' : entry.tab === 'failure-detection' ? 'failureDetection' : entry.tab}`)}
+                    {entry.subTab ? ` › ${t(`settings.tabs.${entry.subTab}`, entry.subTab)}` : ''}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+          {searchQuery && searchResults.length === 0 && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded-lg shadow-xl z-30 p-3">
+              <p className="text-xs text-bambu-gray italic">{t('settings.noSearchResults', 'No matching settings.')}</p>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Tab Navigation */}
-      <div className="flex flex-wrap gap-1 mb-6 border-b border-bambu-dark-tertiary">
+      {/* Tab Navigation + content: horizontal tabs on mobile, vertical rail on lg+ */}
+      <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
+      <nav className="flex flex-wrap gap-1 border-b border-bambu-dark-tertiary lg:flex-col lg:flex-nowrap lg:gap-0 lg:border-b-0 lg:border-r lg:w-48 lg:flex-shrink-0 lg:self-start lg:sticky lg:top-4">
         <button
           onClick={() => handleTabChange('general')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
             activeTab === 'general'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
           }`}
         >
+          <SettingsIcon className="w-4 h-4" />
           {t('settings.tabs.general')}
         </button>
         <button
           onClick={() => handleTabChange('plugs')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
             activeTab === 'plugs'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
@@ -975,7 +1183,7 @@ export function SettingsPage() {
         </button>
         <button
           onClick={() => handleTabChange('notifications')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
             activeTab === 'notifications'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
@@ -990,8 +1198,19 @@ export function SettingsPage() {
           )}
         </button>
         <button
+          onClick={() => handleTabChange('queue')}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
+            activeTab === 'queue'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+          }`}
+        >
+          <ListOrdered className="w-4 h-4" />
+          {t('settings.tabs.queue', 'Workflow')}
+        </button>
+        <button
           onClick={() => handleTabChange('filament')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
             activeTab === 'filament'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
@@ -1002,7 +1221,7 @@ export function SettingsPage() {
         </button>
         <button
           onClick={() => handleTabChange('network')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
             activeTab === 'network'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
@@ -1014,7 +1233,7 @@ export function SettingsPage() {
         </button>
         <button
           onClick={() => handleTabChange('apikeys')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
             activeTab === 'apikeys'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
@@ -1030,7 +1249,7 @@ export function SettingsPage() {
         </button>
         <button
           onClick={() => handleTabChange('virtual-printer')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
             activeTab === 'virtual-printer'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
@@ -1041,8 +1260,37 @@ export function SettingsPage() {
           <span className={`w-2 h-2 rounded-full ${virtualPrinterRunning ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
         <button
+          onClick={() => handleTabChange('spoolbuddy')}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
+            activeTab === 'spoolbuddy'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+          }`}
+        >
+          <Scale className="w-4 h-4" />
+          {t('settings.tabs.spoolbuddy')}
+          {spoolbuddyDeviceCount > 0 && (
+            <span className="text-xs bg-bambu-dark-tertiary px-1.5 py-0.5 rounded-full">
+              {spoolbuddyDeviceCount}
+            </span>
+          )}
+          <span className={`w-2 h-2 rounded-full ${spoolbuddyAnyOnline ? 'bg-green-400' : 'bg-gray-500'}`} />
+        </button>
+        <button
+          onClick={() => handleTabChange('failure-detection')}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
+            activeTab === 'failure-detection'
+              ? 'text-bambu-green border-bambu-green'
+              : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+          }`}
+        >
+          <ScanEye className="w-4 h-4" />
+          {t('settings.tabs.failureDetection')}
+          <span className={`w-2 h-2 rounded-full ${obicoActive ? 'bg-green-400' : 'bg-gray-500'}`} />
+        </button>
+        <button
           onClick={() => handleTabChange('users')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
             activeTab === 'users'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
@@ -1056,7 +1304,7 @@ export function SettingsPage() {
         </button>
         <button
           onClick={() => handleTabChange('backup')}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
             activeTab === 'backup'
               ? 'text-bambu-green border-bambu-green'
               : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
@@ -1066,16 +1314,17 @@ export function SettingsPage() {
           {t('settings.tabs.backup')}
           <span className={`w-2 h-2 rounded-full ${cloudAuthStatus?.is_authenticated && githubBackupStatus?.configured && githubBackupStatus?.enabled ? 'bg-green-400' : 'bg-gray-500'}`} />
         </button>
-      </div>
+      </nav>
+      <div className="flex-1 min-w-0">
       {activeTab === 'general' && (
-      <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
+      <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
         {/* Left Column - General Settings */}
-        <div className="space-y-6 flex-1 lg:max-w-xl">
-          <Card>
+        <div className="space-y-3 flex-1 lg:max-w-xl">
+          <Card id="card-general">
             <CardHeader>
               <h2 className="text-lg font-semibold text-white">{t('settings.general')}</h2>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">
                   <Globe className="w-4 h-4 inline mr-1" />
@@ -1232,14 +1481,14 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card id="card-appearance">
             <CardHeader>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <Palette className="w-5 h-5" />
                 {t('settings.appearance')}
               </h2>
             </CardHeader>
-            <CardContent className="space-y-6">
+            <CardContent className="space-y-3">
               {/* Dark Mode Settings */}
               <div className={`space-y-3 p-4 rounded-lg border ${mode === 'dark' ? 'border-bambu-green bg-bambu-green/5' : 'border-bambu-dark-tertiary'}`}>
                 <h3 className="text-sm font-medium text-white flex items-center gap-2">
@@ -1347,11 +1596,11 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card id="card-archive">
             <CardHeader>
               <h2 className="text-lg font-semibold text-white">{t('settings.archiveSettings')}</h2>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-white">{t('settings.autoArchivePrints')}</p>
@@ -1420,16 +1669,16 @@ export function SettingsPage() {
         </div>
 
         {/* Second Column - Camera, Cost, AMS & Spoolman */}
-        <div className="space-y-6 flex-1 lg:max-w-md">
+        <div className="space-y-3 flex-1 lg:max-w-md">
           {/* Camera Settings */}
-          <Card>
+          <Card id="card-camera">
             <CardHeader>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <Video className="w-5 h-5 text-bambu-green" />
                 {t('settings.camera')}
               </h2>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">
                   {t('settings.cameraViewMode')}
@@ -1547,11 +1796,11 @@ export function SettingsPage() {
           </Card>
 
 
-          <Card>
+          <Card id="card-cost">
             <CardHeader>
               <h2 className="text-lg font-semibold text-white">{t('settings.costTracking')}</h2>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">{t('settings.currency')}</label>
                 <select
@@ -1628,14 +1877,14 @@ export function SettingsPage() {
           </Card>
 
           {/* File Manager Settings */}
-          <Card>
+          <Card id="card-filemanager">
             <CardHeader>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <FileText className="w-5 h-5 text-bambu-green" />
                 {t('settings.fileManager')}
               </h2>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               {/* Archive Mode */}
               <div>
                 <label className="block text-sm text-bambu-gray mb-1">
@@ -1681,15 +1930,15 @@ export function SettingsPage() {
         </div>
 
         {/* Third Column - Sidebar Links & Updates */}
-        <div className="space-y-6 flex-1 lg:max-w-sm">
+        <div className="space-y-3 flex-1 lg:max-w-sm">
           {/* Sidebar Links */}
           <ExternalLinksSettings />
 
-          <Card>
+          <Card id="card-updates">
             <CardHeader>
               <h2 className="text-lg font-semibold text-white">{t('settings.updates')}</h2>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <p className="text-xs font-medium text-bambu-gray uppercase tracking-wider">{t('settings.printerFirmware')}</p>
               <div className="flex items-center justify-between">
                 <div>
@@ -1860,11 +2109,11 @@ export function SettingsPage() {
           </Card>
 
           {/* Data Management */}
-          <Card>
+          <Card id="card-data">
             <CardHeader>
               <h2 className="text-lg font-semibold text-white">{t('settings.dataManagement')}</h2>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-white">{t('settings.clearNotificationLogs')}</p>
@@ -2024,16 +2273,16 @@ export function SettingsPage() {
       {activeTab === 'network' && localSettings && (
       <div className="flex flex-col lg:flex-row gap-6">
         {/* Left Column - External URL & FTP Retry */}
-        <div className="flex-1 lg:max-w-xl space-y-4">
+        <div className="flex-1 lg:max-w-xl space-y-3">
           {/* External URL */}
-          <Card>
+          <Card id="card-externalurl">
             <CardHeader>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <Globe className="w-5 h-5 text-blue-400" />
                 {t('settings.externalUrl')}
               </h2>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <p className="text-sm text-bambu-gray">
                 {t('settings.externalUrlDescription')}
               </p>
@@ -2055,14 +2304,14 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card id="card-ftpretry">
             <CardHeader>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <RefreshCw className="w-5 h-5 text-blue-400" />
                 {t('settings.ftpRetry')}
               </h2>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <p className="text-sm text-bambu-gray">
                 {t('settings.ftpRetryDescription')}
               </p>
@@ -2086,7 +2335,7 @@ export function SettingsPage() {
               </div>
 
               {localSettings.ftp_retry_enabled && (
-                <div className="space-y-4 pt-2 border-t border-bambu-dark-tertiary">
+                <div className="space-y-3 pt-2 border-t border-bambu-dark-tertiary">
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.retryAttempts')}
@@ -2150,9 +2399,9 @@ export function SettingsPage() {
         </div>
 
         {/* Right Column - Home Assistant & MQTT Publishing */}
-        <div className="flex-1 lg:max-w-xl space-y-4">
+        <div className="flex-1 lg:max-w-xl space-y-3">
           {/* Home Assistant Integration */}
-          <Card>
+          <Card id="card-ha">
             <CardHeader>
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -2169,7 +2418,7 @@ export function SettingsPage() {
                 )}
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <p className="text-sm text-bambu-gray">
                 {t('settings.homeAssistantFullDescription')}
               </p>
@@ -2299,7 +2548,7 @@ export function SettingsPage() {
           </Card>
 
           {/* MQTT Publishing */}
-          <Card>
+          <Card id="card-mqtt">
             <CardHeader>
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -2316,7 +2565,7 @@ export function SettingsPage() {
                 )}
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <p className="text-sm text-bambu-gray">
                 {t('settings.mqttDescription')}
               </p>
@@ -2340,7 +2589,7 @@ export function SettingsPage() {
               </div>
 
               {localSettings.mqtt_enabled && (
-                <div className="space-y-4 pt-2 border-t border-bambu-dark-tertiary">
+                <div className="space-y-3 pt-2 border-t border-bambu-dark-tertiary">
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.brokerHostname')}
@@ -2456,15 +2705,15 @@ export function SettingsPage() {
         </div>
 
         {/* Third Column - Prometheus Metrics */}
-        <div className="flex-1 lg:max-w-md space-y-4">
-          <Card>
+        <div className="flex-1 lg:max-w-md space-y-3">
+          <Card id="card-prometheus">
             <CardHeader>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                 <TrendingUp className="w-5 h-5 text-orange-400" />
                 {t('settings.prometheusMetrics')}
               </h2>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               <p className="text-sm text-bambu-gray">
                 {t('settings.prometheusEndpointDescription')}
               </p>
@@ -2486,7 +2735,7 @@ export function SettingsPage() {
               </div>
 
               {localSettings.prometheus_enabled && (
-                <div className="space-y-4 pt-2 border-t border-bambu-dark-tertiary">
+                <div className="space-y-3 pt-2 border-t border-bambu-dark-tertiary">
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">
                       {t('settings.bearerTokenOptional')}
@@ -2556,7 +2805,7 @@ export function SettingsPage() {
 
       {/* Smart Plugs Tab */}
       {activeTab === 'plugs' && (
-        <div className="max-w-4xl">
+        <div id="card-plugs">
           <div className="flex items-start justify-between mb-6">
             <div>
               <h2 className="text-lg font-semibold text-white flex items-center gap-2">
@@ -2710,7 +2959,7 @@ export function SettingsPage() {
               <Loader2 className="w-8 h-8 text-bambu-green animate-spin" />
             </div>
           ) : smartPlugs && smartPlugs.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {smartPlugs.map((plug) => (
                 <SmartPlugCard
                   key={plug.id}
@@ -2747,11 +2996,11 @@ export function SettingsPage() {
 
       {/* Notifications Tab */}
       {activeTab === 'notifications' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Left Column: Providers */}
           <div>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2" id="card-providers">
                 <Bell className="w-5 h-5 text-bambu-green" />
                 {t('settings.providers')}
               </h2>
@@ -2948,21 +3197,59 @@ export function SettingsPage() {
 
           {/* Right Column: Templates */}
           <div>
-            <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-4">
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2 mb-2" id="card-templates">
               <FileText className="w-5 h-5 text-bambu-green" />
               {t('settings.messageTemplates')}
             </h2>
-            <p className="text-sm text-bambu-gray mb-4">
+            <p className="text-sm text-bambu-gray mb-3">
               {t('settings.messageTemplatesDescription')}
             </p>
+
+            {/* Filter input */}
+            <div className="relative mb-3">
+              <Search className="w-4 h-4 text-bambu-gray absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={templateFilter}
+                onChange={(e) => setTemplateFilter(e.target.value)}
+                placeholder={t('settings.filterTemplates', 'Filter templates…')}
+                className="w-full pl-9 pr-8 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+              />
+              {templateFilter && (
+                <button
+                  onClick={() => setTemplateFilter('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-bambu-gray hover:text-white"
+                  aria-label="Clear filter"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
 
             {templatesLoading ? (
               <div className="flex justify-center py-8">
                 <Loader2 className="w-6 h-6 text-bambu-green animate-spin" />
               </div>
             ) : notificationTemplates && notificationTemplates.length > 0 ? (
+              (() => {
+                const filter = templateFilter.trim().toLowerCase();
+                const filtered = [...notificationTemplates]
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .filter(tpl =>
+                    !filter ||
+                    tpl.name.toLowerCase().includes(filter) ||
+                    (tpl.title_template || '').toLowerCase().includes(filter)
+                  );
+                if (filtered.length === 0) {
+                  return (
+                    <p className="text-sm text-bambu-gray italic text-center py-6">
+                      {t('settings.noTemplatesMatch', 'No templates match your filter.')}
+                    </p>
+                  );
+                }
+                return (
               <div className="space-y-2">
-                {[...notificationTemplates].sort((a, b) => a.name.localeCompare(b.name)).map((template) => (
+                {filtered.map((template) => (
                   <Card
                     key={template.id}
                     className="cursor-pointer hover:border-bambu-green/50 transition-colors"
@@ -2990,6 +3277,8 @@ export function SettingsPage() {
                   </Card>
                 ))}
               </div>
+                );
+              })()
             ) : (
               <Card>
                 <CardContent className="py-8">
@@ -3006,12 +3295,12 @@ export function SettingsPage() {
 
       {/* API Keys Tab */}
       {activeTab === 'apikeys' && (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {/* Left Column - API Keys Management */}
           <div>
             <div className="flex items-start justify-between gap-4 mb-6">
               <div className="flex-1">
-                <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                <h2 className="text-lg font-semibold text-white flex items-center gap-2" id="card-createapi">
                   <Key className="w-5 h-5 text-bambu-green" />
                   {t('settings.apiKeys')}
                 </h2>
@@ -3097,7 +3386,7 @@ export function SettingsPage() {
                 <CardHeader>
                   <h3 className="text-base font-semibold text-white">{t('settings.createNewApiKey')}</h3>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="space-y-3">
                   <div>
                     <label className="block text-sm text-bambu-gray mb-1">{t('settings.keyName')}</label>
                     <input
@@ -3237,7 +3526,7 @@ export function SettingsPage() {
             {/* Webhook Documentation */}
             <Card className="mt-6">
               <CardHeader>
-                <h3 className="text-base font-semibold text-white">{t('settings.webhookEndpoints')}</h3>
+                <h3 className="text-base font-semibold text-white" id="card-webhooks">{t('settings.webhookEndpoints')}</h3>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
                 <p className="text-bambu-gray">
@@ -3282,7 +3571,7 @@ export function SettingsPage() {
           {/* Right Column - API Browser */}
           <div>
             <div className="mb-6">
-              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2" id="card-apibrowser">
                 <Globe className="w-5 h-5 text-bambu-green" />
                 {t('settings.apiBrowser')}
               </h2>
@@ -3315,22 +3604,427 @@ export function SettingsPage() {
 
       {/* Virtual Printer Tab */}
       {activeTab === 'virtual-printer' && (
-        <VirtualPrinterList />
+        <div id="card-vp">
+          <VirtualPrinterList />
+        </div>
+      )}
+
+      {/* SpoolBuddy Tab */}
+      {activeTab === 'spoolbuddy' && (
+        <div id="card-spoolbuddy">
+          <SpoolBuddySettings />
+        </div>
       )}
 
       {/* Filament Tab */}
+      {/* Queue Tab */}
+      {activeTab === 'queue' && localSettings && (
+        <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
+          {/* Left Column */}
+          <div className="lg:w-1/2 space-y-3">
+          {/* Default Print Options */}
+          <Card id="card-print-options">
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <ListOrdered className="w-4 h-4 text-bambu-green" />
+                {t('settings.defaultPrintOptions', 'Default Print Options')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-bambu-gray">
+                {t('settings.defaultPrintOptionsDescription', 'Set default values for print options when starting new prints. These can be overridden per print in the print dialog.')}
+              </p>
+              {[
+                { key: 'default_bed_levelling' as const, label: t('settings.defaultBedLevelling', 'Bed Levelling'), desc: t('settings.defaultBedLevellingDesc', 'Auto-level bed before print'), fallback: true },
+                { key: 'default_flow_cali' as const, label: t('settings.defaultFlowCali', 'Flow Calibration'), desc: t('settings.defaultFlowCaliDesc', 'Calibrate extrusion flow'), fallback: false },
+                { key: 'default_vibration_cali' as const, label: t('settings.defaultVibrationCali', 'Vibration Calibration'), desc: t('settings.defaultVibrationCaliDesc', 'Reduce ringing artifacts'), fallback: true },
+                { key: 'default_layer_inspect' as const, label: t('settings.defaultLayerInspect', 'First Layer Inspection'), desc: t('settings.defaultLayerInspectDesc', 'AI inspection of first layer'), fallback: false },
+                { key: 'default_timelapse' as const, label: t('settings.defaultTimelapse', 'Timelapse'), desc: t('settings.defaultTimelapseDesc', 'Record timelapse video'), fallback: false },
+              ].map(({ key, label, desc, fallback }) => (
+                <div key={key} className="flex items-center justify-between">
+                  <div className="flex-1 mr-4">
+                    <p className="text-sm text-white">{label}</p>
+                    <p className="text-xs text-bambu-gray mt-0.5">{desc}</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings[key] ?? fallback}
+                      onChange={(e) => updateSetting(key, e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
+          {/* Staggered Batch Start */}
+          <Card id="card-staggered">
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <Layers className="w-4 h-4 text-bambu-green" />
+                {t('settings.staggeredStart', 'Staggered Start')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-bambu-gray">
+                {t('settings.staggeredStartDescription', 'Default group size and interval when staggering multi-printer batch starts. Can be overridden per batch in the print modal.')}
+              </p>
+              <div className="flex gap-4">
+                <div className="flex-1">
+                  <label className="block text-xs text-bambu-gray mb-1">
+                    {t('settings.staggerGroupSize', 'Group size')}
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={localSettings.stagger_group_size ?? 2}
+                    onChange={(e) => updateSetting('stagger_group_size', Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                  />
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {t('settings.staggerGroupSizeHelp', 'Printers to start simultaneously per group')}
+                  </p>
+                </div>
+                <div className="flex-1">
+                  <label className="block text-xs text-bambu-gray mb-1">
+                    {t('settings.staggerInterval', 'Interval (minutes)')}
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={60}
+                    value={localSettings.stagger_interval_minutes ?? 5}
+                    onChange={(e) => updateSetting('stagger_interval_minutes', Math.max(1, Math.min(60, parseInt(e.target.value) || 1)))}
+                    className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-sm focus:outline-none focus:border-bambu-green"
+                  />
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {t('settings.staggerIntervalHelp', 'Delay between each group starting')}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Plate-Clear Confirmation */}
+          <Card id="card-plate">
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <Shield className="w-4 h-4 text-bambu-green" />
+                {t('settings.plateClear', 'Plate-Clear Confirmation')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex-1 mr-4">
+                  <p className="text-sm text-white">
+                    {t('settings.requirePlateClear', 'Require plate-clear confirmation')}
+                  </p>
+                  <p className="text-xs text-bambu-gray mt-1">
+                    {t('settings.requirePlateClearDescription', 'When enabled, the scheduler waits for per-printer plate-clear confirmation before starting queued prints on printers with finished jobs. Disable for farm workflows where plates are verified physically.')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.require_plate_clear ?? false}
+                    onChange={(e) => updateSetting('require_plate_clear', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* G-code Injection (#422) */}
+          <Card id="card-gcode">
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2">
+                <Code className="w-4 h-4 text-bambu-green" />
+                {t('settings.gcodeInjection', 'G-code Injection')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-bambu-gray">
+                {t('settings.gcodeInjectionDescription', 'Configure custom G-code to inject at the start and/or end of prints for auto-print systems like Farmloop, SwapMod, AutoClear, and Printflow 3D. Snippets are configured per printer model and applied when "Inject G-code" is enabled on a queue item.')}
+              </p>
+              {(() => {
+                const gcodeSnippets: Record<string, { start_gcode: string; end_gcode: string }> = (() => {
+                  try {
+                    return localSettings.gcode_snippets ? JSON.parse(localSettings.gcode_snippets) : {};
+                  } catch {
+                    return {};
+                  }
+                })();
+                const printerModels = [...new Set((printers || []).filter((p) => p.model).map((p) => p.model as string))].sort();
+
+                const updateSnippet = (model: string, field: 'start_gcode' | 'end_gcode', value: string) => {
+                  const updated = { ...gcodeSnippets };
+                  if (!updated[model]) {
+                    updated[model] = { start_gcode: '', end_gcode: '' };
+                  }
+                  updated[model][field] = value;
+                  // Remove model entry if both fields are empty
+                  if (!updated[model].start_gcode && !updated[model].end_gcode) {
+                    delete updated[model];
+                  }
+                  const newValue = Object.keys(updated).length > 0 ? JSON.stringify(updated) : '';
+                  // Update local state for immediate UI feedback, save on blur
+                  setLocalSettings(prev => prev ? { ...prev, gcode_snippets: newValue } : null);
+                  pendingGcodeSnippetsRef.current = newValue;
+                };
+
+                const saveGcodeSnippets = () => {
+                  if (pendingGcodeSnippetsRef.current !== null) {
+                    updateMutation.mutate({ gcode_snippets: pendingGcodeSnippetsRef.current });
+                    pendingGcodeSnippetsRef.current = null;
+                  }
+                };
+
+                if (printerModels.length === 0) {
+                  return (
+                    <p className="text-sm text-bambu-gray italic">
+                      {t('settings.gcodeInjectionNoPrinters', 'No printers found. Add printers to configure G-code snippets.')}
+                    </p>
+                  );
+                }
+
+                return printerModels.map((model) => {
+                  const snippet = gcodeSnippets[model] || { start_gcode: '', end_gcode: '' };
+                  const hasContent = !!(snippet.start_gcode || snippet.end_gcode);
+                  return (
+                    <Collapsible
+                      key={model}
+                      defaultOpen={hasContent}
+                      className="border border-bambu-dark-tertiary rounded-lg px-3 py-2"
+                      summary={
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-sm font-medium text-white">{model}</h4>
+                          {hasContent && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-bambu-green/20 text-bambu-green">
+                              {t('settings.gcodeConfigured', 'Configured')}
+                            </span>
+                          )}
+                        </div>
+                      }
+                    >
+                      <div className="space-y-2">
+                        <div>
+                          <label className="block text-xs text-bambu-gray mb-1">
+                            {t('settings.gcodeStartLabel', 'Start G-code')}
+                          </label>
+                          <textarea
+                            value={snippet.start_gcode}
+                            onChange={(e) => updateSnippet(model, 'start_gcode', e.target.value)}
+                            onBlur={saveGcodeSnippets}
+                            placeholder={t('settings.gcodeStartPlaceholder', 'G-code prepended before the print starts...')}
+                            rows={3}
+                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-bambu-gray mb-1">
+                            {t('settings.gcodeEndLabel', 'End G-code')}
+                          </label>
+                          <textarea
+                            value={snippet.end_gcode}
+                            onChange={(e) => updateSnippet(model, 'end_gcode', e.target.value)}
+                            onBlur={saveGcodeSnippets}
+                            placeholder={t('settings.gcodeEndPlaceholder', 'G-code appended after the print ends...')}
+                            rows={3}
+                            className="w-full px-3 py-2 bg-bambu-dark border border-bambu-dark-tertiary rounded-lg text-white text-xs font-mono focus:outline-none focus:border-bambu-green resize-y"
+                          />
+                        </div>
+                      </div>
+                    </Collapsible>
+                  );
+                });
+              })()}
+            </CardContent>
+          </Card>
+
+          </div>
+          {/* Right Column */}
+          <div className="lg:w-1/2 space-y-3">
+          {/* Auto-Drying */}
+          <Card>
+            <CardHeader>
+              <h3 className="text-base font-semibold text-white flex items-center gap-2" id="card-drying">
+                <Flame className="w-4 h-4 text-amber-400" />
+                {t('settings.queueDrying')}
+              </h3>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-bambu-gray">
+                {t('settings.queueDryingDescription')}
+              </p>
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="block text-sm text-white">
+                    {t('settings.queueDryingEnabled')}
+                  </label>
+                  <p className="text-xs text-bambu-gray mt-0.5">
+                    {t('settings.queueDryingEnabledDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.queue_drying_enabled ?? false}
+                    onChange={(e) => updateSetting('queue_drying_enabled', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              {localSettings.queue_drying_enabled && (
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-sm text-white">
+                      {t('settings.queueDryingBlock')}
+                    </label>
+                    <p className="text-xs text-bambu-gray mt-0.5">
+                      {t('settings.queueDryingBlockDescription')}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.queue_drying_block ?? false}
+                      onChange={(e) => updateSetting('queue_drying_block', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+                  </label>
+                </div>
+              )}
+              <div className="flex items-center justify-between">
+                <div>
+                  <label className="block text-sm text-white">
+                    {t('settings.ambientDryingEnabled')}
+                  </label>
+                  <p className="text-xs text-bambu-gray mt-0.5">
+                    {t('settings.ambientDryingEnabledDescription')}
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.ambient_drying_enabled ?? false}
+                    onChange={(e) => updateSetting('ambient_drying_enabled', e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                </label>
+              </div>
+              {/* Drying Presets Table */}
+              <div className="space-y-2">
+                <p className="text-sm text-white font-medium">{t('settings.dryingPresets')}</p>
+                <p className="text-xs text-bambu-gray">{t('settings.dryingPresetsDescription')}</p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-bambu-gray border-b border-bambu-dark-tertiary">
+                        <th className="text-left py-1.5">{t('settings.dryingFilament')}</th>
+                        <th className="text-center py-1.5" colSpan={2}>AMS 2 Pro</th>
+                        <th className="text-center py-1.5" colSpan={2}>AMS-HT</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(() => {
+                        const defaults: Record<string, { n3f: number; n3s: number; n3f_hours: number; n3s_hours: number }> = {
+                          PLA: { n3f: 45, n3s: 45, n3f_hours: 12, n3s_hours: 12 },
+                          PETG: { n3f: 65, n3s: 65, n3f_hours: 12, n3s_hours: 12 },
+                          TPU: { n3f: 65, n3s: 75, n3f_hours: 12, n3s_hours: 18 },
+                          ABS: { n3f: 65, n3s: 80, n3f_hours: 12, n3s_hours: 8 },
+                          ASA: { n3f: 65, n3s: 80, n3f_hours: 12, n3s_hours: 8 },
+                          PA: { n3f: 65, n3s: 85, n3f_hours: 12, n3s_hours: 12 },
+                          PC: { n3f: 65, n3s: 80, n3f_hours: 12, n3s_hours: 8 },
+                          PVA: { n3f: 65, n3s: 85, n3f_hours: 12, n3s_hours: 18 },
+                        };
+                        let presets = { ...defaults };
+                        try {
+                          if (localSettings.drying_presets) {
+                            const parsed = JSON.parse(localSettings.drying_presets);
+                            if (typeof parsed === 'object' && parsed !== null) {
+                              presets = { ...defaults, ...parsed };
+                            }
+                          }
+                        } catch { /* use defaults */ }
+
+                        const updatePreset = (fil: string, key: string, value: number) => {
+                          const updated = { ...presets, [fil]: { ...presets[fil], [key]: value } };
+                          updateSetting('drying_presets', JSON.stringify(updated));
+                        };
+
+                        return Object.entries(presets).map(([fil, preset]) => (
+                          <tr key={fil} className="border-b border-bambu-dark-tertiary/50">
+                            <td className="py-1.5 pr-2 text-white font-medium">{fil}</td>
+                            <td className="py-1 px-1">
+                              <div className="flex items-center justify-end gap-1">
+                                <input type="number" min={30} max={65} value={preset.n3f}
+                                  onChange={e => updatePreset(fil, 'n3f', Math.max(1, parseInt(e.target.value) || 0))}
+                                  className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                />
+                                <span className="text-bambu-gray">°C</span>
+                              </div>
+                            </td>
+                            <td className="py-1 px-1">
+                              <div className="flex items-center gap-1">
+                                <input type="number" min={1} max={24} value={preset.n3f_hours}
+                                  onChange={e => updatePreset(fil, 'n3f_hours', Math.max(1, parseInt(e.target.value) || 0))}
+                                  className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                />
+                                <span className="text-bambu-gray">h</span>
+                              </div>
+                            </td>
+                            <td className="py-1 px-1">
+                              <div className="flex items-center justify-end gap-1">
+                                <input type="number" min={30} max={85} value={preset.n3s}
+                                  onChange={e => updatePreset(fil, 'n3s', Math.max(1, parseInt(e.target.value) || 0))}
+                                  className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                />
+                                <span className="text-bambu-gray">°C</span>
+                              </div>
+                            </td>
+                            <td className="py-1 px-1">
+                              <div className="flex items-center gap-1">
+                                <input type="number" min={1} max={24} value={preset.n3s_hours}
+                                  onChange={e => updatePreset(fil, 'n3s_hours', Math.max(1, parseInt(e.target.value) || 0))}
+                                  className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                />
+                                <span className="text-bambu-gray">h</span>
+                              </div>
+                            </td>
+                          </tr>
+                        ));
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          </div>
+        </div>
+      )}
+
       {activeTab === 'filament' && localSettings && (
         <>
-        <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
+        <div className="flex flex-col lg:flex-row gap-4 lg:gap-6">
           {/* Left Column (1/3) - Mode Selector + AMS Thresholds */}
-          <div className="lg:w-1/3 space-y-6">
+          <div className="lg:w-1/3 space-y-3">
             <SpoolmanSettings />
 
-            <Card>
+            <Card id="card-filamentchecks">
               <CardHeader>
                 <h2 className="text-lg font-semibold text-white">{t('settings.filamentChecks')}</h2>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-white">{t('settings.disableFilamentWarnings')}</p>
@@ -3348,14 +4042,57 @@ export function SettingsPage() {
                     <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
                   </label>
                 </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white">{t('settings.preferLowestFilament')}</p>
+                    <p className="text-sm text-bambu-gray">
+                      {t('settings.preferLowestFilamentDesc')}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.prefer_lowest_filament}
+                      onChange={(e) => updateSetting('prefer_lowest_filament', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
               </CardContent>
             </Card>
 
-            <Card>
+            {/* Per-Printer Mapping Default */}
+            <Card id="card-printmodal">
+              <CardHeader>
+                <h2 className="text-lg font-semibold text-white">{t('settings.printModal')}</h2>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-white">{t('settings.expandCustomMapping')}</p>
+                    <p className="text-sm text-bambu-gray">
+                      {t('settings.expandCustomMappingDescription')}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.per_printer_mapping_expanded ?? false}
+                      onChange={(e) => updateSetting('per_printer_mapping_expanded', e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
+                  </label>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card id="card-amsthresholds">
               <CardHeader>
                 <h2 className="text-lg font-semibold text-white">{t('settings.amsDisplayThresholds')}</h2>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-3">
                 <p className="text-sm text-bambu-gray">
                   {t('settings.amsThresholdsDescription')}
                 </p>
@@ -3482,212 +4219,12 @@ export function SettingsPage() {
                   </p>
                 </div>
 
-                {/* Queue Auto-Drying */}
-                <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
-                  <div className="flex items-center gap-2 text-white">
-                    <Flame className="w-4 h-4 text-amber-400" />
-                    <span className="font-medium">{t('settings.queueDrying')}</span>
-                  </div>
-                  <p className="text-xs text-bambu-gray">
-                    {t('settings.queueDryingDescription')}
-                  </p>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="block text-sm text-white">
-                        {t('settings.queueDryingEnabled')}
-                      </label>
-                      <p className="text-xs text-bambu-gray mt-0.5">
-                        {t('settings.queueDryingEnabledDescription')}
-                      </p>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={localSettings.queue_drying_enabled ?? false}
-                        onChange={(e) => updateSetting('queue_drying_enabled', e.target.checked)}
-                        className="sr-only peer"
-                      />
-                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                    </label>
-                  </div>
-                  {localSettings.queue_drying_enabled && (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <label className="block text-sm text-white">
-                            {t('settings.queueDryingBlock')}
-                          </label>
-                          <p className="text-xs text-bambu-gray mt-0.5">
-                            {t('settings.queueDryingBlockDescription')}
-                          </p>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={localSettings.queue_drying_block ?? false}
-                            onChange={(e) => updateSetting('queue_drying_block', e.target.checked)}
-                            className="sr-only peer"
-                          />
-                          <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
-                        </label>
-                      </div>
-                    </>
-                  )}
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="block text-sm text-white">
-                        {t('settings.ambientDryingEnabled')}
-                      </label>
-                      <p className="text-xs text-bambu-gray mt-0.5">
-                        {t('settings.ambientDryingEnabledDescription')}
-                      </p>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={localSettings.ambient_drying_enabled ?? false}
-                        onChange={(e) => updateSetting('ambient_drying_enabled', e.target.checked)}
-                        className="sr-only peer"
-                      />
-                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                    </label>
-                  </div>
-                  {/* Drying Presets Table — always visible since manual drying also uses these */}
-                  <div className="space-y-2">
-                    <p className="text-sm text-white font-medium">{t('settings.dryingPresets')}</p>
-                    <p className="text-xs text-bambu-gray">{t('settings.dryingPresetsDescription')}</p>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="text-bambu-gray border-b border-bambu-dark-tertiary">
-                            <th className="text-left py-1.5">{t('settings.dryingFilament')}</th>
-                            <th className="text-center py-1.5" colSpan={2}>AMS 2 Pro</th>
-                            <th className="text-center py-1.5" colSpan={2}>AMS-HT</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(() => {
-                            const defaults: Record<string, { n3f: number; n3s: number; n3f_hours: number; n3s_hours: number }> = {
-                              PLA: { n3f: 45, n3s: 45, n3f_hours: 12, n3s_hours: 12 },
-                              PETG: { n3f: 65, n3s: 65, n3f_hours: 12, n3s_hours: 12 },
-                              TPU: { n3f: 65, n3s: 75, n3f_hours: 12, n3s_hours: 18 },
-                              ABS: { n3f: 65, n3s: 80, n3f_hours: 12, n3s_hours: 8 },
-                              ASA: { n3f: 65, n3s: 80, n3f_hours: 12, n3s_hours: 8 },
-                              PA: { n3f: 65, n3s: 85, n3f_hours: 12, n3s_hours: 12 },
-                              PC: { n3f: 65, n3s: 80, n3f_hours: 12, n3s_hours: 8 },
-                              PVA: { n3f: 65, n3s: 85, n3f_hours: 12, n3s_hours: 18 },
-                            };
-                            let presets = { ...defaults };
-                            try {
-                              if (localSettings.drying_presets) {
-                                const parsed = JSON.parse(localSettings.drying_presets);
-                                if (typeof parsed === 'object' && parsed !== null) {
-                                  presets = { ...defaults, ...parsed };
-                                }
-                              }
-                            } catch { /* use defaults */ }
-
-                            const updatePreset = (fil: string, key: string, value: number) => {
-                              const updated = { ...presets, [fil]: { ...presets[fil], [key]: value } };
-                              updateSetting('drying_presets', JSON.stringify(updated));
-                            };
-
-                            return Object.entries(presets).map(([fil, preset]) => (
-                              <tr key={fil} className="border-b border-bambu-dark-tertiary/50">
-                                <td className="py-1.5 pr-2 text-white font-medium">{fil}</td>
-                                <td className="py-1 px-1">
-                                  <div className="flex items-center justify-end gap-1">
-                                    <input
-                                      type="number"
-                                      min={30}
-                                      max={65}
-                                      value={preset.n3f}
-                                      onChange={e => updatePreset(fil, 'n3f', Math.max(1, parseInt(e.target.value) || 0))}
-                                      className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                                    />
-                                    <span className="text-bambu-gray">°C</span>
-                                  </div>
-                                </td>
-                                <td className="py-1 px-1">
-                                  <div className="flex items-center gap-1">
-                                    <input
-                                      type="number"
-                                      min={1}
-                                      max={24}
-                                      value={preset.n3f_hours}
-                                      onChange={e => updatePreset(fil, 'n3f_hours', Math.max(1, parseInt(e.target.value) || 0))}
-                                      className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                                    />
-                                    <span className="text-bambu-gray">h</span>
-                                  </div>
-                                </td>
-                                <td className="py-1 px-1">
-                                  <div className="flex items-center justify-end gap-1">
-                                    <input
-                                      type="number"
-                                      min={30}
-                                      max={85}
-                                      value={preset.n3s}
-                                      onChange={e => updatePreset(fil, 'n3s', Math.max(1, parseInt(e.target.value) || 0))}
-                                      className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                                    />
-                                    <span className="text-bambu-gray">°C</span>
-                                  </div>
-                                </td>
-                                <td className="py-1 px-1">
-                                  <div className="flex items-center gap-1">
-                                    <input
-                                      type="number"
-                                      min={1}
-                                      max={24}
-                                      value={preset.n3s_hours}
-                                      onChange={e => updatePreset(fil, 'n3s_hours', Math.max(1, parseInt(e.target.value) || 0))}
-                                      className="w-14 px-1.5 py-1 bg-bambu-dark border border-bambu-dark-tertiary rounded text-white text-center text-xs focus:border-amber-500/50 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                                    />
-                                    <span className="text-bambu-gray">h</span>
-                                  </div>
-                                </td>
-                              </tr>
-                            ));
-                          })()}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Per-Printer Mapping Default */}
-                <div className="space-y-3 pt-4 border-t border-bambu-dark-tertiary">
-                  <div className="flex items-center gap-2 text-white">
-                    <Printer className="w-4 h-4 text-bambu-green" />
-                    <span className="font-medium">{t('settings.printModal')}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="block text-sm text-white">
-                        {t('settings.expandCustomMapping')}
-                      </label>
-                      <p className="text-xs text-bambu-gray mt-0.5">
-                        {t('settings.expandCustomMappingDescription')}
-                      </p>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={localSettings.per_printer_mapping_expanded ?? false}
-                        onChange={(e) => updateSetting('per_printer_mapping_expanded', e.target.checked)}
-                        className="sr-only peer"
-                      />
-                      <div className="w-11 h-6 bg-bambu-dark-tertiary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-bambu-green"></div>
-                    </label>
-                  </div>
-                </div>
               </CardContent>
             </Card>
           </div>
 
           {/* Right Column (2/3) - Spool Catalog + Color Catalog */}
-          <div className="lg:w-2/3 space-y-6">
+          <div className="lg:w-2/3 space-y-3">
             <SpoolCatalogSettings />
             <ColorCatalogSettings />
           </div>
@@ -3855,12 +4392,12 @@ export function SettingsPage() {
 
       {/* Users Tab */}
       {activeTab === 'users' && (
-        <div className="space-y-6">
+        <div className="space-y-3">
           {/* Sub-tab Navigation */}
           <div className="flex gap-1 border-b border-bambu-dark-tertiary">
             <button
               onClick={() => setUsersSubTab('users')}
-              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
                 usersSubTab === 'users'
                   ? 'text-bambu-green border-bambu-green'
                   : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
@@ -3871,7 +4408,7 @@ export function SettingsPage() {
             </button>
             <button
               onClick={() => setUsersSubTab('email')}
-              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
                 usersSubTab === 'email'
                   ? 'text-bambu-green border-bambu-green'
                   : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
@@ -3883,6 +4420,58 @@ export function SettingsPage() {
                 <span className="w-2 h-2 rounded-full bg-green-400" />
               )}
             </button>
+            <button
+              onClick={() => setUsersSubTab('ldap')}
+              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px lg:border-b-0 lg:border-l-2 lg:-ml-px lg:mb-0 lg:justify-start flex items-center gap-2 ${
+                usersSubTab === 'ldap'
+                  ? 'text-bambu-green border-bambu-green'
+                  : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+              }`}
+            >
+              <Shield className="w-4 h-4" />
+              {t('settings.tabs.ldap') || 'LDAP'}
+              {ldapStatus?.ldap_enabled && (
+                <span className="w-2 h-2 rounded-full bg-green-400" />
+              )}
+            </button>
+            <button
+              onClick={() => setUsersSubTab('twofa')}
+              className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+                usersSubTab === 'twofa'
+                  ? 'text-bambu-green border-bambu-green'
+                  : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+              }`}
+            >
+              <Shield className="w-4 h-4" />
+              {t('settings.tabs.twoFa')}
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  twoFAStatus?.totp_enabled || twoFAStatus?.email_otp_enabled
+                    ? 'bg-green-400'
+                    : 'bg-bambu-gray/40'
+                }`}
+              />
+            </button>
+            {isAdmin && (
+              <button
+                onClick={() => setUsersSubTab('oidc')}
+                className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-2 ${
+                  usersSubTab === 'oidc'
+                    ? 'text-bambu-green border-bambu-green'
+                    : 'text-bambu-gray hover:text-gray-900 dark:hover:text-white border-transparent'
+                }`}
+              >
+                <Globe className="w-4 h-4" />
+                {t('settings.tabs.oidc')}
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    oidcProvidersAll.some((p) => p.is_enabled)
+                      ? 'bg-green-400'
+                      : 'bg-bambu-gray/40'
+                  }`}
+                />
+              </button>
+            )}
           </div>
 
           {/* Users Sub-tab */}
@@ -3946,20 +4535,22 @@ export function SettingsPage() {
           {authEnabled && (
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
               {/* Left Column: Current User + User List */}
-              <div className="space-y-6">
+              <div className="space-y-3">
                 {/* Current User Card */}
                 {user && (
                   <Card>
                     <CardHeader>
                       <div className="flex items-center justify-between">
-                        <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                        <h3 className="text-lg font-semibold text-white flex items-center gap-2" id="card-currentuser">
                           <Users className="w-5 h-5 text-bambu-green" />
                           {t('settings.currentUser')}
                         </h3>
+                        {user.auth_source !== 'ldap' && (
                         <Button size="sm" variant="ghost" onClick={() => setShowChangePasswordModal(true)}>
                           <Key className="w-4 h-4" />
                           {t('settings.changePassword')}
                         </Button>
+                        )}
                       </div>
                     </CardHeader>
                     <CardContent>
@@ -3999,7 +4590,7 @@ export function SettingsPage() {
                 <Card>
                   <CardHeader>
                     <div className="flex items-center justify-between">
-                      <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                      <h3 className="text-lg font-semibold text-white flex items-center gap-2" id="card-users">
                         <Users className="w-5 h-5 text-bambu-green" />
                         {t('settings.users')}
                       </h3>
@@ -4031,6 +4622,11 @@ export function SettingsPage() {
                             <div className="flex-1 min-w-0">
                               <p className="text-white font-medium truncate">{userItem.username}</p>
                               <div className="flex flex-wrap gap-1 mt-1">
+                                {userItem.auth_source === 'ldap' && (
+                                  <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-cyan-500/20 text-cyan-300">
+                                    LDAP
+                                  </span>
+                                )}
                                 {userItem.is_admin && (
                                   <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-500/20 text-purple-300">
                                     {t('settings.admin')}
@@ -4079,7 +4675,7 @@ export function SettingsPage() {
                 <Card>
                   <CardHeader>
                     <div className="flex items-center justify-between">
-                      <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                      <h3 className="text-lg font-semibold text-white flex items-center gap-2" id="card-groups">
                         <Shield className="w-5 h-5 text-bambu-green" />
                         {t('settings.groups')}
                       </h3>
@@ -4192,8 +4788,26 @@ export function SettingsPage() {
 
           {/* Email Auth Sub-tab */}
           {usersSubTab === 'email' && (
-            <div className="max-w-2xl">
+            <div className="max-w-5xl" id="card-smtp">
               <EmailSettings />
+            </div>
+          )}
+
+          {usersSubTab === 'ldap' && (
+            <div className="max-w-5xl" id="card-ldap">
+              <LDAPSettings />
+            </div>
+          )}
+
+          {usersSubTab === 'twofa' && (
+            <div className="max-w-2xl">
+              <TwoFactorSettings />
+            </div>
+          )}
+
+          {usersSubTab === 'oidc' && isAdmin && (
+            <div className="max-w-3xl">
+              <OIDCProviderSettings />
             </div>
           )}
         </div>
@@ -4231,7 +4845,7 @@ export function SettingsPage() {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
+              <div className="space-y-3">
                 <div>
                   <label className="block text-sm font-medium text-white mb-2">{t('settings.username')}</label>
                   <input
@@ -4382,7 +4996,7 @@ export function SettingsPage() {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {/* Username Field */}
                 <div>
                   <label className="block text-sm font-medium text-white mb-2">
@@ -4563,7 +5177,7 @@ export function SettingsPage() {
                 <h3 className="text-lg font-semibold">{t('settings.deleteUserTitle')}</h3>
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-3">
               {deleteUserLoading ? (
                 <div className="flex items-center justify-center py-4">
                   <div className="animate-spin rounded-full h-6 w-6 border-2 border-bambu-green border-t-transparent" />
@@ -4659,8 +5273,16 @@ export function SettingsPage() {
       )}
 
       {/* Backup Tab */}
+      {activeTab === 'failure-detection' && (
+        <div id="card-failure-detection">
+          <FailureDetectionSettings />
+        </div>
+      )}
+
       {activeTab === 'backup' && (
-        <GitHubBackupSettings />
+        <div id="card-backup">
+          <GitHubBackupSettings />
+        </div>
       )}
 
       {/* Disable Authentication Confirmation Modal */}
@@ -4719,7 +5341,7 @@ export function SettingsPage() {
               </div>
             </CardHeader>
             <CardContent>
-              <div className="space-y-4">
+              <div className="space-y-3">
                 <div>
                   <label className="block text-sm font-medium text-white mb-2">
                     Current Password
@@ -4821,6 +5443,9 @@ export function SettingsPage() {
           </Card>
         </div>
       )}
+      </div>
+      </div>
     </div>
+    </CardDensityProvider>
   );
 }

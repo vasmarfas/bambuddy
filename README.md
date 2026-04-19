@@ -17,6 +17,7 @@
   <a href="https://github.com/maziggy/bambuddy/stargazers"><img src="https://img.shields.io/github/stars/maziggy/bambuddy?style=flat-square" alt="Stars"></a>
   <a href="https://github.com/maziggy/bambuddy/issues"><img src="https://img.shields.io/github/issues/maziggy/bambuddy?style=flat-square" alt="Issues"></a>
   <a href="https://discord.gg/aFS3ZfScHM"><img src="https://img.shields.io/discord/1461241694715645994?style=flat-square&logo=discord&logoColor=white&label=Discord&color=5865F2" alt="Discord"></a>
+  <a href="https://forum.bambuddy.cool"><img src="https://img.shields.io/badge/Forum-bambuddy.cool-00adef?style=flat-square&logo=discourse&logoColor=white" alt="Forum"></a>
   <a href="https://ko-fi.com/maziggy"><img src="https://img.shields.io/badge/Ko--fi-Support-ff5e5b?style=flat-square&logo=ko-fi&logoColor=white" alt="Ko-fi" target=_blank></a>
 </p>
 
@@ -25,6 +26,7 @@
   <a href="#-screenshots">Screenshots</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="http://wiki.bambuddy.cool">Documentation</a> •
+  <a href="https://forum.bambuddy.cool">Forum</a> •
   <a href="https://discord.gg/aFS3ZfScHM">Discord</a> •
   <a href="#-contributing">Contributing</a>
 </p>
@@ -36,12 +38,13 @@
 Bambuddy is a community-driven project and I'm **actively looking for contributors** — especially for two areas I can't cover alone:
 
 - 📝 **Documentation writers** — help improve the wiki, guides, and feature docs so new users have a smooth onboarding
-- ⚙️ **Discourse admin** — we already have a **Discourse** instance running but it still needs to be configured, themed, and tuned (categories, permissions, SSO, email, plugins, backups). If you know Discourse or want to dig in, I'd love your help.
-- 💬 **Forum moderators** — once the forum opens, we need people to welcome newcomers, answer questions, and keep discussions healthy
+- ⚙️ **Discourse admin** — our **Discourse forum** is now live at [forum.bambuddy.cool](https://forum.bambuddy.cool) but still needs to be configured, themed, and tuned (categories, permissions, SSO, email, plugins, backups). If you know Discourse or want to dig in, I'd love your help.
+- 💬 **Forum moderators** — help welcome newcomers, answer questions, and keep discussions healthy on the new forum
 
 You don't need to be a developer for the docs or moderator roles. If you enjoy writing, helping others, or keeping a community friendly, you're exactly who we're looking for.
 
 **Get in touch:**
+- 🗣️ [Forum](https://forum.bambuddy.cool) — chats, longer discussions, guides, and community Q&A
 - 💬 [Discord](https://discord.gg/aFS3ZfScHM) — fastest way to chat
 - 🐙 [GitHub Discussions](https://github.com/maziggy/bambuddy/discussions) — open a thread
 - 📧 **martin@bambuddy.cool** — email Martin directly (no GitHub or Discord needed)
@@ -102,7 +105,11 @@ Perfect for remote print farms, traveling makers, or accessing your home printer
 - External camera support (MJPEG, RTSP, HTTP snapshot, USB/V4L2) with layer-based timelapse
 - **Build plate empty detection** - Auto-pause print if objects detected on plate (multi-reference calibration, ROI adjustment)
 - Fan status monitoring (part cooling, auxiliary, chamber)
-- Printer control (stop, pause, resume, chamber light, print speed)
+- Printer control (stop, pause, resume, chamber light, print speed, **airduct mode** for P2S/H2*, **build-plate Z-jog** with Studio-style not-homed warning)
+- **Status badges on printer card**: SD Card (green / red), Enclosure Door (green / yellow — X1/P1S/P2S/H2*), Airduct Mode (cooling / heating)
+- **Force Refresh** menu item — request a full status push from the printer without reconnecting
+- Bulk printer actions (multi-select cards, then stop/pause/resume/clear all — select by state or location)
+- Printer search and filters — live search by name/model/location/serial plus status and location dropdown filters (WebSocket-reactive, mobile-friendly)
 - Resizable printer cards (S/M/L/XL)
 - Skip objects during print
 - AMS slot RFID re-read
@@ -117,22 +124,32 @@ Perfect for remote print farms, traveling makers, or accessing your home printer
 - Print success rates & trends
 - Filament usage tracking
 - Cost analytics & failure analysis
+- **AI print-failure detection** — Optional integration with a self-hosted [Obico](https://github.com/TheSpaghettiDetective/obico-server) ML API: watches each running print's camera feed, smooths scores over time (30-frame warmup + EWM + rolling means), and fires a configurable action once per print (notify / pause / pause-and-off)
+- Per-user statistics filtering (admin permission gated)
 - CSV/Excel export
 
 ### ⏰ Scheduling & Automation
 - **Background print dispatch** — FTP uploads and print-start commands run in the background with real-time WebSocket progress toasts (per-job upload bars, status badges, cancel button)
-- Print queue with drag-and-drop
+- Print queue with drag-and-drop and timeline schedule view
 - Multi-printer selection (send to multiple printers at once)
+- Batch print quantity (print multiple copies — set quantity in the print/schedule dialog, first copy prints immediately, rest are queued)
+- Staggered batch start (start printers in groups with configurable interval to avoid power spikes — works in both Print and Queue dialogs)
+- Configurable default print options (bed levelling, flow/vibration calibration, first layer inspection, timelapse) in Settings → Workflow
 - Model-based queue assignment (send to "any X1C" for load balancing) with location filtering
 - Filament override for model-based queue (swap filament colors/types before scheduling)
 - Filament validation (only assign to printers with required filaments)
+- Prefer lowest remaining filament (consume partial spools first when multiple match)
 - Per-printer AMS mapping (individual slot configuration for print farms)
 - Scheduled prints (date/time)
+- Shortest Job First scheduling (SJF toggle on queue page — scheduler picks shorter prints first, with starvation guard)
 - Queue Only mode (stage without auto-start)
-- Clear plate confirmation between queued prints
-- Smart plug integration (Tasmota, Home Assistant, MQTT)
+- Clear plate confirmation between queued prints (can be disabled in settings for farm workflows)
+- Auto-print G-code injection (per-model start/end snippets for Farmloop, SwapMod, AutoClear, Printflow 3D — toggle per queue item)
+- Smart plug integration (Tasmota, Home Assistant, MQTT, REST/Webhook)
+- REST smart plugs: Control any device with an HTTP API (openHAB, ioBroker, FHEM, Node-RED) with separate power/energy URLs and unit multipliers
 - MQTT smart plugs: Subscribe to Zigbee2MQTT, Shelly, or any MQTT topic for energy monitoring
-- Energy consumption tracking (per-print kWh and cost)
+- Energy consumption tracking (per-print kWh and cost) — restart-resilient: mid-print backend restarts no longer lose per-print energy
+- Energy statistics by date range (Today / Week / Month / …) in total-consumption mode via hourly lifetime-counter snapshots
 - HA energy sensor support (for plugs with separate power/energy sensors)
 - Auto power-on before print
 - Auto power-off after cooldown
@@ -158,6 +175,7 @@ Perfect for remote print farms, traveling makers, or accessing your home printer
 - Color-coded project badges
 - Bulk assign archives via multi-select toolbar
 - Import/Export projects as ZIP (includes files) or JSON
+- Print or queue files from linked library folders directly in the project view (resulting archive auto-linked to the project)
 
 </td>
 <td width="50%" valign="top">
@@ -195,6 +213,7 @@ Perfect for remote print farms, traveling makers, or accessing your home printer
 - **Local Profiles** - Import OrcaSlicer presets (`.orca_filament`, `.bbscfg`, `.bbsflmt`, `.zip`, `.json`) without Bambu Cloud
 - K-profiles (pressure advance)
 - **GitHub backup** - Schedule automatic backups of cloud profiles, k profiles and settings to GitHub
+- **Scheduled local backups** - Automatic backup snapshots on hourly/daily/weekly schedule with retention management and NAS-mountable output
 - External sidebar links
 - Webhooks & API keys
 - Interactive API browser with live testing
@@ -214,7 +233,7 @@ Perfect for remote print farms, traveling makers, or accessing your home printer
 - Interval reminders (hours/days)
 - Print time accuracy stats
 - File manager for printer storage
-- Firmware update helper with version badge (LAN-only printers)
+- Firmware update helper with version badge (LAN-only printers) — lists all announced versions with Usable/Unavailable/Installed badges and supports rollback to older firmware
 - Debug logging toggle with live indicator
 - Live application log viewer with filtering
 - Support bundle generator with comprehensive diagnostics (privacy-filtered)
@@ -233,6 +252,8 @@ Perfect for remote print farms, traveling makers, or accessing your home printer
 - Admin creates users with email — system sends secure random password automatically
 - Users can reset their own password from the login screen (no admin needed)
 - Customizable email templates (welcome email, password reset)
+- **Two-Factor Authentication (TOTP + Email OTP)** — Per-user opt-in 2FA compatible with Google Authenticator, Authy, 2FAS and any standard TOTP app, or a 6-digit code delivered by email. Each user gets 10 single-use backup codes. Brute-force-protected (per-user + per-IP rate limits), replay-protected (same code cannot be accepted twice in the same 30 s window), and the pre-auth token is a single-use DB-backed challenge bound to the browser session via an HttpOnly cookie.
+- **Single Sign-On (OIDC / SSO)** — Log in via PocketID, Authentik, Keycloak, or any standards-compliant OIDC provider. PKCE (S256) for public clients, `email_verified` gating, issuer & `aud`/`nonce` validation, opt-in account linking via verified email, optional auto-provisioning of new BamBuddy accounts, and strict SSRF hardening on every URL pulled from the OIDC discovery document (scheme + private/loopback/link-local IP checks).
 - **Per-user email notifications** — Users receive email alerts for their own print jobs (start, complete, failed, stopped) with individual toggle controls
 
 </td>
@@ -433,7 +454,7 @@ Open **http://localhost:8000** in your browser.
 
 | Volume | Purpose |
 |--------|---------|
-| `bambuddy.db` | SQLite database with all your print data |
+| `bambuddy.db` | SQLite database with all your print data (not used with PostgreSQL) |
 | `archive/` | Archived 3MF files and thumbnails |
 | `logs/` | Application logs |
 
@@ -579,6 +600,7 @@ Full documentation available at **[wiki.bambuddy.cool](http://wiki.bambuddy.cool
 | Series | Models |
 |--------|--------|
 | X1 | X1, X1 Carbon, X1E |
+| X2 | X2D |
 | H2 | H2D, H2D Pro, H2C, H2S |
 | P1 | P1P, P1S |
 | P2 | P2S |
@@ -592,7 +614,7 @@ Full documentation available at **[wiki.bambuddy.cool](http://wiki.bambuddy.cool
 |-----------|------------|
 | Backend | Python, FastAPI, SQLAlchemy |
 | Frontend | React, TypeScript, Tailwind CSS |
-| Database | SQLite |
+| Database | SQLite (default) or PostgreSQL |
 | 3D Viewer | Three.js |
 | Communication | MQTT (TLS), FTPS |
 
@@ -600,12 +622,16 @@ Full documentation available at **[wiki.bambuddy.cool](http://wiki.bambuddy.cool
 
 ## 🤝 Contributing
 
-Contributions welcome! Here's how to help:
+Contributions welcome! **I'm especially looking for help with documentation and our new [Discourse forum](https://forum.bambuddy.cool)** — see [Contributors Wanted](#-contributors-wanted--help-shape-bambuddy) above. Other ways to help:
 
-1. **Test** — Report issues with your printer model
-2. **Translate** — Add new languages
-3. **Code** — Submit PRs for bugs or features
-4. **Document** — Improve wiki and guides
+1. **📝 Document** — Improve the wiki and guides *(urgently needed!)*
+2. **⚙️ Admin Discourse** — Help configure and tune the [forum](https://forum.bambuddy.cool) *(urgently needed!)*
+3. **💬 Moderate** — Welcome newcomers and keep [forum](https://forum.bambuddy.cool) discussions healthy *(urgently needed!)*
+4. **Test** — Report issues with your printer model
+5. **Translate** — Add new languages
+6. **Code** — Submit PRs for bugs or features
+
+Not sure where to start? Reach out on [Discord](https://discord.gg/aFS3ZfScHM), post on the [forum](https://forum.bambuddy.cool), or email **martin@bambuddy.cool** — I'll help you find something that fits.
 
 ```bash
 # Development setup
@@ -647,6 +673,7 @@ If you like Bambuddy and want to support it, you can <a href="https://ko-fi.com/
 <p align="center">
   Made with ❤️ for the 3D printing community
   <br><br>
+  <a href="https://forum.bambuddy.cool">Forum</a> •
   <a href="https://discord.gg/aFS3ZfScHM">Join our Discord</a> •
   <a href="https://github.com/maziggy/bambuddy/issues">Report Bug</a> •
   <a href="https://github.com/maziggy/bambuddy/issues">Request Feature</a> •

@@ -88,7 +88,8 @@ export interface UseMultiPrinterFilamentMappingResult {
 function computeMatchDetails(
   filamentReqs: FilamentRequirement[] | undefined,
   loadedFilaments: LoadedFilament[],
-  manualMappings: Record<number, number>
+  manualMappings: Record<number, number>,
+  preferLowest?: boolean,
 ): { exactMatches: number; typeOnlyMatches: number; missingTypes: number; totalSlots: number; status: PrinterMatchStatus } {
   if (!filamentReqs || filamentReqs.length === 0) {
     return { exactMatches: 0, typeOnlyMatches: 0, missingTypes: 0, totalSlots: 0, status: 'full' };
@@ -131,6 +132,14 @@ function computeMatchDetails(
       if (nozzleFiltered.length > 0) {
         candidates = nozzleFiltered;
       }
+    }
+
+    if (preferLowest) {
+      candidates = [...candidates].sort((a, b) => {
+        const ra = a.remain >= 0 ? a.remain : 101;
+        const rb = b.remain >= 0 ? b.remain : 101;
+        return ra - rb;
+      });
     }
 
     const exactMatch = candidates.find(
@@ -183,7 +192,8 @@ function computeMatchDetails(
 function computeMappingWithOverrides(
   filamentReqs: { filaments: FilamentRequirement[] } | undefined,
   printerStatus: PrinterStatus | undefined,
-  manualMappings: Record<number, number>
+  manualMappings: Record<number, number>,
+  preferLowest?: boolean,
 ): number[] | undefined {
   if (!filamentReqs?.filaments || filamentReqs.filaments.length === 0) return undefined;
 
@@ -209,6 +219,14 @@ function computeMappingWithOverrides(
       if (nozzleFiltered.length > 0) {
         candidates = nozzleFiltered;
       }
+    }
+
+    if (preferLowest) {
+      candidates = [...candidates].sort((a, b) => {
+        const ra = a.remain >= 0 ? a.remain : 101;
+        const rb = b.remain >= 0 ? b.remain : 101;
+        return ra - rb;
+      });
     }
 
     const exactMatch = candidates.find(
@@ -270,7 +288,8 @@ export function useMultiPrinterFilamentMapping(
   filamentReqs: { filaments: FilamentRequirement[] } | undefined,
   defaultMappings: Record<number, number>,
   perPrinterConfigs: Record<number, PerPrinterConfig>,
-  setPerPrinterConfigs: React.Dispatch<React.SetStateAction<Record<number, PerPrinterConfig>>>
+  setPerPrinterConfigs: React.Dispatch<React.SetStateAction<Record<number, PerPrinterConfig>>>,
+  preferLowest?: boolean,
 ): UseMultiPrinterFilamentMappingResult {
   // Fetch printer status for all selected printers in parallel
   const statusQueries = useQueries({
@@ -294,7 +313,7 @@ export function useMultiPrinterFilamentMapping(
       const config = perPrinterConfigs[printerId] || DEFAULT_PRINTER_CONFIG;
 
       // Compute auto mapping for this printer
-      const autoMapping = computeAmsMapping(filamentReqs, printerStatus);
+      const autoMapping = computeAmsMapping(filamentReqs, printerStatus, preferLowest);
 
       // Determine which mappings to use:
       // If printer has override (useDefault=false), use its custom mappings
@@ -304,13 +323,14 @@ export function useMultiPrinterFilamentMapping(
         : defaultMappings;
 
       // Compute final mapping with overrides
-      const finalMapping = computeMappingWithOverrides(filamentReqs, printerStatus, effectiveMappings);
+      const finalMapping = computeMappingWithOverrides(filamentReqs, printerStatus, effectiveMappings, preferLowest);
 
       // Compute match details
       const matchDetails = computeMatchDetails(
         filamentReqs?.filaments,
         loadedFilaments,
-        effectiveMappings
+        effectiveMappings,
+        preferLowest,
       );
 
       return {
@@ -329,7 +349,7 @@ export function useMultiPrinterFilamentMapping(
         config,
       };
     });
-  }, [selectedPrinterIds, statusQueries, printers, filamentReqs, perPrinterConfigs, defaultMappings]);
+  }, [selectedPrinterIds, statusQueries, printers, filamentReqs, perPrinterConfigs, defaultMappings, preferLowest]);
 
   const isLoading = statusQueries.some((q) => q.isLoading);
 
@@ -350,7 +370,7 @@ export function useMultiPrinterFilamentMapping(
     if (!result || !result.status || !filamentReqs?.filaments) return;
 
     // Compute optimal mapping for this printer
-    const autoMapping = computeAmsMapping(filamentReqs, result.status);
+    const autoMapping = computeAmsMapping(filamentReqs, result.status, preferLowest);
     if (!autoMapping) return;
 
     // Convert autoMapping array to manualMappings record

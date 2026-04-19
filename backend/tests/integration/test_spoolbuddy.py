@@ -153,6 +153,36 @@ class TestDeviceEndpoints:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_unregister_device(self, async_client: AsyncClient, device_factory, db_session):
+        await device_factory(device_id="sb-keep", hostname="keep")
+        await device_factory(device_id="sb-drop", hostname="drop")
+        spoolbuddy_routes._spoolbuddy_online_last_broadcast["sb-drop"] = 123.0
+
+        with patch("backend.app.api.routes.spoolbuddy.ws_manager") as mock_ws:
+            mock_ws.broadcast = AsyncMock()
+            resp = await async_client.delete(f"{API}/devices/sb-drop")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "deleted", "device_id": "sb-drop"}
+        assert "sb-drop" not in spoolbuddy_routes._spoolbuddy_online_last_broadcast
+        mock_ws.broadcast.assert_called_once()
+        msg = mock_ws.broadcast.call_args[0][0]
+        assert msg["type"] == "spoolbuddy_unregistered"
+        assert msg["device_id"] == "sb-drop"
+
+        # Other device still present
+        resp = await async_client.get(f"{API}/devices")
+        remaining = {d["device_id"] for d in resp.json()}
+        assert remaining == {"sb-keep"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_unregister_device_not_found(self, async_client: AsyncClient):
+        resp = await async_client.delete(f"{API}/devices/sb-ghost")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_heartbeat_updates_status(self, async_client: AsyncClient, device_factory):
         device = await device_factory(device_id="sb-hb")
         spoolbuddy_routes._spoolbuddy_online_last_broadcast.clear()
@@ -860,6 +890,27 @@ class TestDisplayEndpoints:
         )
         assert resp.status_code == 422  # Validation error: brightness > 100
 
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_display_settings(self, async_client: AsyncClient, device_factory):
+        """The kiosk idle watchdog (install/spoolbuddy-idle.sh) reads this
+        endpoint on autostart to configure swayidle with the user-selected
+        blank timeout before launching. See issue #937."""
+        await device_factory(device_id="sb-disp-get", display_brightness=60, display_blank_timeout=450)
+
+        resp = await async_client.get(f"{API}/devices/sb-disp-get/display")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["brightness"] == 60
+        assert data["blank_timeout"] == 450
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_display_unknown_device_404(self, async_client: AsyncClient):
+        resp = await async_client.get(f"{API}/devices/ghost/display")
+        assert resp.status_code == 404
+
 
 # ============================================================================
 # Update endpoints
@@ -1037,3 +1088,130 @@ class TestUpdateEndpoints:
         assert msg["type"] == "spoolbuddy_update"
         assert msg["device_id"] == "sb-upd-ws"
         assert msg["update_status"] == "pending"
+
+
+# ============================================================================
+# System command endpoints
+# ============================================================================
+
+
+class TestSystemCommandEndpoints:
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_reboot(self, async_client: AsyncClient, device_factory):
+        await device_factory(device_id="sb-reboot")
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-reboot/system/command",
+            json={"command": "reboot"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "queued"
+        assert data["command"] == "reboot"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_shutdown(self, async_client: AsyncClient, device_factory):
+        await device_factory(device_id="sb-shutdown")
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-shutdown/system/command",
+            json={"command": "shutdown"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "shutdown"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_restart_daemon(self, async_client: AsyncClient, device_factory):
+        await device_factory(device_id="sb-rd")
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-rd/system/command",
+            json={"command": "restart_daemon"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "restart_daemon"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_queue_restart_browser(self, async_client: AsyncClient, device_factory):
+        await device_factory(device_id="sb-rb")
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-rb/system/command",
+            json={"command": "restart_browser"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "restart_browser"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_invalid_command_rejected(self, async_client: AsyncClient, device_factory):
+        await device_factory(device_id="sb-invalid")
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-invalid/system/command",
+            json={"command": "format_disk"},
+        )
+        assert resp.status_code == 400
+        assert "Invalid command" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_command_unknown_device_404(self, async_client: AsyncClient):
+        resp = await async_client.post(
+            f"{API}/devices/ghost/system/command",
+            json={"command": "reboot"},
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_command_offline_device_409(self, async_client: AsyncClient, device_factory):
+        await device_factory(
+            device_id="sb-offline-cmd",
+            last_seen=datetime.now(timezone.utc) - timedelta(seconds=120),
+        )
+
+        resp = await async_client.post(
+            f"{API}/devices/sb-offline-cmd/system/command",
+            json={"command": "reboot"},
+        )
+        assert resp.status_code == 409
+        assert "offline" in resp.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_command_sets_pending_command(self, async_client: AsyncClient, device_factory, db_session):
+        device = await device_factory(device_id="sb-pending")
+
+        await async_client.post(
+            f"{API}/devices/sb-pending/system/command",
+            json={"command": "restart_daemon"},
+        )
+
+        await db_session.refresh(device)
+        assert device.pending_command == "restart_daemon"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_heartbeat_clears_system_command(self, async_client: AsyncClient, device_factory):
+        """System commands (reboot/shutdown/restart_*) are fire-and-forget — heartbeat clears them."""
+        await device_factory(device_id="sb-hb-clear")
+
+        # Queue a command
+        await async_client.post(
+            f"{API}/devices/sb-hb-clear/system/command",
+            json={"command": "restart_browser"},
+        )
+
+        # Heartbeat should return the command and clear it
+        resp = await async_client.post(
+            f"{API}/devices/sb-hb-clear/heartbeat",
+            json={"nfc_ok": True, "scale_ok": True, "uptime_s": 100},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["pending_command"] == "restart_browser"

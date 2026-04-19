@@ -3,17 +3,12 @@ import { useOutletContext } from 'react-router-dom';
 import { useQuery, useQueries } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import type { SpoolBuddyOutletContext } from '../../components/spoolbuddy/SpoolBuddyLayout';
-import { api, type InventorySpool, type Printer } from '../../api/client';
+import { api, type InventorySpool, type Printer, type PrinterStatus } from '../../api/client';
+import { useToast } from '../../contexts/ToastContext';
 import { SpoolIcon } from '../../components/spoolbuddy/SpoolIcon';
 import { SpoolInfoCard, UnknownTagCard } from '../../components/spoolbuddy/SpoolInfoCard';
 import { AssignToAmsModal } from '../../components/spoolbuddy/AssignToAmsModal';
 import { LinkSpoolModal } from '../../components/spoolbuddy/LinkSpoolModal';
-
-// Color palette for the cycling spool animation
-const SPOOL_COLORS = [
-  '#00AE42', '#FF6B35', '#3B82F6', '#EF4444', '#A855F7',
-  '#FBBF24', '#14B8A6', '#EC4899', '#F97316', '#22C55E',
-];
 
 function normalizeHexTag(value: string | null | undefined): string {
   if (!value) return '';
@@ -29,15 +24,21 @@ function tagsEquivalent(a: string | null | undefined, b: string | null | undefin
   return aNorm.endsWith(bNorm) || bNorm.endsWith(aNorm);
 }
 
-// --- Idle state with color-cycling spool and NFC waves ---
-function ColorCyclingSpool() {
+// Color palette for the cycling spool animation
+const SPOOL_COLORS = [
+  '#00AE42', '#FF6B35', '#3B82F6', '#EF4444', '#A855F7',
+  '#FBBF24', '#14B8A6', '#EC4899', '#F97316', '#22C55E',
+];
+
+// --- Idle state with slow color-cycling spool ---
+function IdleSpool() {
   const { t } = useTranslation();
   const [colorIndex, setColorIndex] = useState(0);
 
   useEffect(() => {
     const interval = setInterval(() => {
       setColorIndex((prev) => (prev + 1) % SPOOL_COLORS.length);
-    }, 2000);
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -45,20 +46,34 @@ function ColorCyclingSpool() {
 
   return (
     <div className="flex flex-col items-center text-center">
-      {/* Animated spool with NFC waves */}
+      {/* Animated spool with optimized NFC waves */}
       <div className="relative mb-6 flex items-center justify-center" style={{ width: 160, height: 160 }}>
-        {/* NFC wave rings */}
-        <div className="absolute w-24 h-24 rounded-full border-2 border-green-500/30 animate-ping" style={{ animationDuration: '2.5s' }} />
-        <div className="absolute w-32 h-32 rounded-full border border-green-500/20 animate-ping" style={{ animationDuration: '2.5s', animationDelay: '0.4s' }} />
-        <div className="absolute w-40 h-40 rounded-full border border-green-500/10 animate-ping" style={{ animationDuration: '2.5s', animationDelay: '0.8s' }} />
+        {/* NFC wave rings: transform + opacity only for Pi-friendly rendering */}
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          {[0, 1].map((i) => (
+            <div
+              key={i}
+              className="absolute rounded-full border spoolbuddy-optimized-ping"
+              style={{
+                width: 80,
+                height: 80,
+                borderColor: `${currentColor}4D`,
+                transition: 'border-color 140ms linear',
+                animationDelay: `${i * 0.8}s`,
+              }}
+            />
+          ))}
+        </div>
 
-        {/* Spool icon with color transition and glow */}
-        <div className="relative">
+        {/* Spool icon with lightweight radial glow */}
+        <div className="relative overflow-hidden rounded-full">
           <div
-            className="absolute -inset-4 rounded-full blur-2xl opacity-30 transition-colors duration-1000"
-            style={{ backgroundColor: currentColor }}
+            className="absolute inset-0 rounded-full opacity-30 spoolbuddy-spool-glow"
+            style={{
+              background: `radial-gradient(circle, ${currentColor} 0%, transparent 70%)`,
+            }}
           />
-          <div className="transition-all duration-1000">
+          <div className="relative" style={{ transition: 'opacity 140ms linear' }}>
             <SpoolIcon color={currentColor} isEmpty={false} size={100} />
           </div>
         </div>
@@ -123,6 +138,7 @@ function DeviceOfflineState() {
 export function SpoolBuddyDashboard() {
   const { sbState, selectedPrinterId } = useOutletContext<SpoolBuddyOutletContext>();
   const { t } = useTranslation();
+  const { showToast } = useToast();
 
   // Fetch spools for stats, tag lookup, and untagged list
   const { data: spools = [], refetch: refetchSpools } = useQuery({
@@ -141,6 +157,7 @@ export function SpoolBuddyDashboard() {
       queryKey: ['printerStatus', printer.id],
       queryFn: () => api.getPrinterStatus(printer.id),
       refetchInterval: 10000,
+      select: (data: PrinterStatus) => ({ connected: data?.connected }),
     })),
   });
 
@@ -258,15 +275,17 @@ export function SpoolBuddyDashboard() {
         data_origin: 'spoolbuddy',
         tag_type: 'generic',
         cost_per_kg: null,
-        last_scale_weight: weight,
+        last_scale_weight: weight !== null ? Math.round(weight) : null,
         last_weighed_at: weight !== null ? new Date().toISOString() : null,
       });
-      setShowQuickAddModal(false);
-      refetchSpools();
     } catch (e) {
-      console.error('Failed to quick-add spool:', e);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('Failed to quick-add spool:', msg);
+      showToast(msg || t('spoolbuddy.errors.quickAddFailed', 'Failed to add spool'), 'error');
     } finally {
+      setShowQuickAddModal(false);
       setQuickAddBusy(false);
+      refetchSpools();
     }
   };
 
@@ -313,7 +332,7 @@ export function SpoolBuddyDashboard() {
             <div className="space-y-2.5">
               {/* Connection status */}
               <div className="flex items-center gap-3">
-                <div className={`w-2.5 h-2.5 rounded-full ${sbState.deviceOnline ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+                <div className={`w-2.5 h-2.5 rounded-full ${sbState.deviceOnline ? 'bg-green-500' : 'bg-red-500'}`} />
                 <span className="text-base text-zinc-400">
                   {sbState.deviceOnline ? t('spoolbuddy.status.online', 'Online') : t('spoolbuddy.status.offline', 'Disconnected')}
                 </span>
@@ -383,18 +402,21 @@ export function SpoolBuddyDashboard() {
                 <DeviceOfflineState />
               ) : (displayedSpool || sbState.matchedSpool) && displayedTagId && hiddenTagId !== displayedTagId ? (
                 <SpoolInfoCard
-                  spool={{
-                    id: displayedSpool?.id ?? sbState.matchedSpool!.id,
-                    tag_uid: displayedTagId,
-                    material: displayedSpool?.material ?? sbState.matchedSpool!.material,
-                    subtype: displayedSpool?.subtype ?? sbState.matchedSpool!.subtype,
-                    color_name: displayedSpool?.color_name ?? sbState.matchedSpool!.color_name,
-                    rgba: displayedSpool?.rgba ?? sbState.matchedSpool!.rgba,
-                    brand: displayedSpool?.brand ?? sbState.matchedSpool!.brand,
-                    label_weight: displayedSpool?.label_weight ?? sbState.matchedSpool!.label_weight,
-                    core_weight: displayedSpool?.core_weight ?? sbState.matchedSpool!.core_weight,
-                    weight_used: displayedSpool?.weight_used ?? sbState.matchedSpool!.weight_used,
-                  }}
+                  spool={(() => {
+                    const s = displayedSpool ?? sbState.matchedSpool!;
+                    return {
+                      id: s.id,
+                      tag_uid: displayedTagId,
+                      material: s.material,
+                      subtype: s.subtype,
+                      color_name: s.color_name,
+                      rgba: s.rgba,
+                      brand: s.brand,
+                      label_weight: s.label_weight,
+                      core_weight: s.core_weight,
+                      weight_used: s.weight_used,
+                    };
+                  })()}
                   scaleWeight={liveWeight ?? displayedWeight}
                   onSyncWeight={() => refetchSpools()}
                   onAssignToAms={() => setShowAssignAmsModal(true)}
@@ -409,7 +431,7 @@ export function SpoolBuddyDashboard() {
                   onClose={handleCloseSpoolCard}
                 />
               ) : (
-                <ColorCyclingSpool />
+                <IdleSpool />
               )}
             </div>
           </div>

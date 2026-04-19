@@ -161,7 +161,7 @@ export function SpoolmanSettings() {
 
   if (settingsLoading) {
     return (
-      <Card>
+      <Card id="card-spoolman">
         <CardHeader>
           <div className="flex items-center gap-2">
             <Database className="w-5 h-5 text-bambu-green" />
@@ -178,7 +178,7 @@ export function SpoolmanSettings() {
   }
 
   return (
-    <Card>
+    <Card id="card-spoolman">
       <CardHeader>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">

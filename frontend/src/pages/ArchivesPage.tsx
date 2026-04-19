@@ -46,6 +46,8 @@ import {
   FolderKanban,
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Settings,
   User,
   Play,
@@ -2381,6 +2383,15 @@ export function ArchivesPage() {
   const [collection, setCollection] = useState<Collection>(() =>
     (localStorage.getItem('archiveCollection') as Collection) || 'all'
   );
+  // Pagination state
+  const [pageIndex, setPageIndex] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem('archivePageSize');
+      return stored ? Number(stored) : 50;
+    } catch { return 50; }
+  });
+
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showCompareModal, setShowCompareModal] = useState(false);
@@ -2562,6 +2573,15 @@ export function ArchivesPage() {
     localStorage.setItem('archiveFilterFileType', filterFileType);
   }, [filterFileType]);
 
+  // Reset page when filters/search/sort/collection change
+  useEffect(() => {
+    setPageIndex(0);
+  }, [search, filterPrinter, filterMaterial, filterColors, colorFilterMode, filterFavorites, hideFailed, hideDuplicates, filterTag, filterFileType, sortBy, collection]);
+
+  useEffect(() => {
+    try { localStorage.setItem('archivePageSize', String(pageSize)); } catch { /* ignore */ }
+  }, [pageSize]);
+
   useEffect(() => {
     localStorage.setItem('archiveViewMode', viewMode);
   }, [viewMode]);
@@ -2712,6 +2732,27 @@ export function ArchivesPage() {
           return 0;
       }
     });
+
+  // Pagination
+  const totalFiltered = filteredArchives?.length || 0;
+  const showAll = pageSize === -1;
+  const effectivePageSize = showAll ? totalFiltered || 1 : pageSize;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / effectivePageSize));
+  const paginatedArchives = showAll
+    ? filteredArchives
+    : filteredArchives?.slice(pageIndex * effectivePageSize, (pageIndex + 1) * effectivePageSize);
+
+  // Jump to the page containing the highlighted archive
+  useEffect(() => {
+    if (highlightedArchiveId && filteredArchives && !showAll) {
+      const idx = filteredArchives.findIndex(a => a.id === highlightedArchiveId);
+      if (idx >= 0) {
+        const targetPage = Math.floor(idx / effectivePageSize);
+        if (targetPage !== pageIndex) setPageIndex(targetPage);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightedArchiveId]);
 
   const selectionMode = isSelectionMode || selectedIds.size > 0;
 
@@ -3305,40 +3346,10 @@ export function ArchivesPage() {
           />
         </Card>
       ) : viewMode === 'grid' ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-          {filteredArchives?.map((archive) => (
-            <ArchiveCard
-              key={archive.id}
-              archive={archive}
-              printerName={archive.printer_id ? printerMap.get(archive.printer_id) || 'Unknown' : (archive.sliced_for_model ? `Sliced for ${archive.sliced_for_model}` : 'No Printer')}
-              isSelected={selectedIds.has(archive.id)}
-              onSelect={toggleSelect}
-              selectionMode={selectionMode}
-              projects={projects}
-              isHighlighted={archive.id === highlightedArchiveId}
-              timeFormat={timeFormat}
-              preferredSlicer={preferredSlicer}
-              currency={currency}
-              t={t}
-              onNavigateToArchive={handleNavigateToArchive}
-            />
-          ))}
-        </div>
-      ) : viewMode === 'list' ? (
-        <Card>
-          <div className="divide-y divide-bambu-dark-tertiary">
-            {/* List Header */}
-            <div className="grid grid-cols-12 gap-4 px-4 py-3 text-xs text-bambu-gray font-medium">
-              <div className="col-span-1"></div>
-              <div className="col-span-4">Name</div>
-              <div className="col-span-2">Printer</div>
-              <div className="col-span-2">Date</div>
-              <div className="col-span-1">Size</div>
-              <div className="col-span-2 text-right">Actions</div>
-            </div>
-            {/* List Items */}
-            {filteredArchives?.map((archive) => (
-              <ArchiveListRow
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {paginatedArchives?.map((archive) => (
+              <ArchiveCard
                 key={archive.id}
                 archive={archive}
                 printerName={archive.printer_id ? printerMap.get(archive.printer_id) || 'Unknown' : (archive.sliced_for_model ? `Sliced for ${archive.sliced_for_model}` : 'No Printer')}
@@ -3347,13 +3358,65 @@ export function ArchivesPage() {
                 selectionMode={selectionMode}
                 projects={projects}
                 isHighlighted={archive.id === highlightedArchiveId}
+                timeFormat={timeFormat}
                 preferredSlicer={preferredSlicer}
+                currency={currency}
                 t={t}
                 onNavigateToArchive={handleNavigateToArchive}
               />
             ))}
           </div>
-        </Card>
+          <ArchivePaginationBar
+            pageIndex={pageIndex}
+            pageSize={pageSize}
+            totalRows={totalFiltered}
+            totalPages={totalPages}
+            onPageChange={setPageIndex}
+            onPageSizeChange={(size) => { setPageSize(size); setPageIndex(0); }}
+            t={t}
+          />
+        </>
+      ) : viewMode === 'list' ? (
+        <>
+          <Card>
+            <div className="divide-y divide-bambu-dark-tertiary">
+              {/* List Header */}
+              <div className="grid grid-cols-12 gap-4 px-4 py-3 text-xs text-bambu-gray font-medium">
+                <div className="col-span-1"></div>
+                <div className="col-span-4">Name</div>
+                <div className="col-span-2">Printer</div>
+                <div className="col-span-2">Date</div>
+                <div className="col-span-1">Size</div>
+                <div className="col-span-2 text-right">Actions</div>
+              </div>
+              {/* List Items */}
+              {paginatedArchives?.map((archive) => (
+                <ArchiveListRow
+                  key={archive.id}
+                  archive={archive}
+                  printerName={archive.printer_id ? printerMap.get(archive.printer_id) || 'Unknown' : (archive.sliced_for_model ? `Sliced for ${archive.sliced_for_model}` : 'No Printer')}
+                  isSelected={selectedIds.has(archive.id)}
+                  onSelect={toggleSelect}
+                  selectionMode={selectionMode}
+                  projects={projects}
+                  isHighlighted={archive.id === highlightedArchiveId}
+                  preferredSlicer={preferredSlicer}
+                  t={t}
+                  onNavigateToArchive={handleNavigateToArchive}
+                />
+              ))}
+            </div>
+          </Card>
+          <ArchivePaginationBar
+            pageIndex={pageIndex}
+            pageSize={pageSize}
+            totalRows={totalFiltered}
+            totalPages={totalPages}
+            onPageChange={setPageIndex}
+            onPageSizeChange={(size) => { setPageSize(size); setPageIndex(0); }}
+            t={t}
+          />
+        </>
       ) : viewMode === 'log' ? (
         <div className="space-y-4">
           {/* Log filters */}
@@ -3635,6 +3698,83 @@ export function ArchivesPage() {
           onCancel={() => setShowClearLogConfirm(false)}
         />
       )}
+    </div>
+  );
+}
+
+/* Pagination bar for archives grid/list views */
+function ArchivePaginationBar({
+  pageIndex, pageSize, totalRows, totalPages, onPageChange, onPageSizeChange, t,
+}: {
+  pageIndex: number;
+  pageSize: number;
+  totalRows: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+  t: (key: string) => string;
+}) {
+  const isShowAll = pageSize === -1;
+  if (totalPages <= 1 && !isShowAll) return null;
+  const effectiveSize = isShowAll ? totalRows || 1 : pageSize;
+  return (
+    <div className="flex items-center justify-between pt-2 text-sm">
+      <span className="text-bambu-gray">
+        {isShowAll
+          ? `${totalRows} ${t('archives.prints')}`
+          : <>{t('archives.pagination.showing')} {pageIndex * effectiveSize + 1} {t('archives.pagination.to')}{' '}
+              {Math.min((pageIndex + 1) * effectiveSize, totalRows)}{' '}
+              {t('archives.pagination.of')} {totalRows} {t('archives.prints')}</>
+        }
+      </span>
+      <div className="flex items-center gap-2">
+        <span className="text-bambu-gray">{t('archives.pagination.show')}</span>
+        <select
+          value={pageSize}
+          onChange={(e) => onPageSizeChange(Number(e.target.value))}
+          className="px-2 py-1 bg-bambu-dark-secondary border border-bambu-dark-tertiary rounded text-white text-sm focus:outline-none focus:border-bambu-green"
+        >
+          {[25, 50, 100, 200].map((n) => (
+            <option key={n} value={n}>{n}</option>
+          ))}
+          <option value={-1}>{t('archives.pagination.all')}</option>
+        </select>
+        {!isShowAll && (
+          <>
+            <button
+              onClick={() => onPageChange(0)}
+              disabled={pageIndex === 0}
+              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronsLeft className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => onPageChange(Math.max(0, pageIndex - 1))}
+              disabled={pageIndex === 0}
+              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="text-bambu-gray px-2 whitespace-nowrap">
+              {t('archives.pagination.page')} {pageIndex + 1} {t('archives.pagination.of')} {totalPages}
+            </span>
+            <button
+              onClick={() => onPageChange(Math.min(totalPages - 1, pageIndex + 1))}
+              disabled={pageIndex >= totalPages - 1}
+              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => onPageChange(totalPages - 1)}
+              disabled={pageIndex >= totalPages - 1}
+              className="p-1.5 rounded text-bambu-gray hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronsRight className="w-4 h-4" />
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }

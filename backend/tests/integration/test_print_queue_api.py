@@ -149,6 +149,62 @@ class TestPrintQueueAPI:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
+    async def test_add_to_queue_with_project_id(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """#932: queue items created from the project view carry project_id forward."""
+        from backend.app.models.project import Project
+
+        printer = await printer_factory()
+        archive = await archive_factory()
+        project = Project(name="Queue Project")
+        db_session.add(project)
+        await db_session.commit()
+        await db_session.refresh(project)
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+            "project_id": project.id,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        # The response schema may or may not echo project_id; the stored row is
+        # what matters, so verify via DB.
+        from sqlalchemy import select
+
+        from backend.app.models.print_queue import PrintQueueItem
+
+        row = (await db_session.execute(select(PrintQueueItem).where(PrintQueueItem.id == result["id"]))).scalar_one()
+        assert row.project_id == project.id
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_invalid_project_id_returns_404(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """#932: bogus project_id must be rejected before the FK constraint fires.
+
+        Regression guard for the pre-check added to add_to_queue. Without the
+        validation, a nonexistent project_id would reach db.commit() and raise
+        an IntegrityError → 500. The pre-check must convert that to a 404 so
+        the UI gets a clean error it can surface.
+        """
+        printer = await printer_factory()
+        archive = await archive_factory()
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+            "project_id": 999999,  # nonexistent
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 404
+        assert "project" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
     async def test_add_to_queue_with_ams_mapping(
         self, async_client: AsyncClient, printer_factory, archive_factory, db_session
     ):
@@ -1293,6 +1349,7 @@ class TestAbortedStatusNormalisation:
 
         with (
             patch("backend.app.main.async_session", return_value=mock_session),
+            patch("backend.app.core.database.async_session", return_value=mock_session),
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.mqtt_relay") as mock_relay,
             patch("backend.app.main.notification_service") as mock_notif,
@@ -1388,6 +1445,7 @@ class TestAbortedStatusNormalisation:
 
         with (
             patch("backend.app.main.async_session", return_value=mock_session),
+            patch("backend.app.core.database.async_session", return_value=mock_session),
             patch("backend.app.main.ws_manager") as mock_ws,
             patch("backend.app.main.mqtt_relay") as mock_relay,
             patch("backend.app.main.notification_service") as mock_notif,
@@ -1423,3 +1481,215 @@ class TestAbortedStatusNormalisation:
                     pass
 
         assert item.status == "completed"
+
+    # ========================================================================
+    # Batch quantity tests
+    # ========================================================================
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_quantity_default(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Verify quantity=1 (default) creates a single item with no batch."""
+        printer = await printer_factory()
+        archive = await archive_factory()
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["batch_id"] is None
+        assert result["batch_name"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_quantity_one_explicit(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Verify quantity=1 explicitly creates a single item with no batch."""
+        printer = await printer_factory()
+        archive = await archive_factory()
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+            "quantity": 1,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        assert result["batch_id"] is None
+        assert result["batch_name"] is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_quantity_creates_batch(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Verify quantity > 1 creates a batch and multiple queue items."""
+        printer = await printer_factory()
+        archive = await archive_factory()
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+            "quantity": 3,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        result = response.json()
+        # First item is returned, linked to a batch
+        assert result["batch_id"] is not None
+        assert result["batch_name"] is not None
+        assert "×3" in result["batch_name"]
+
+        # Verify all 3 items were created
+        list_response = await async_client.get("/api/v1/queue/")
+        items = list_response.json()
+        batch_items = [i for i in items if i["batch_id"] == result["batch_id"]]
+        assert len(batch_items) == 3
+        # All items should have the same settings
+        for item in batch_items:
+            assert item["printer_id"] == printer.id
+            assert item["archive_id"] == archive.id
+            assert item["status"] == "pending"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_quantity_sequential_positions(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Verify batch items get sequential positions."""
+        printer = await printer_factory()
+        archive = await archive_factory()
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+            "quantity": 3,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        batch_id = response.json()["batch_id"]
+
+        list_response = await async_client.get("/api/v1/queue/")
+        items = list_response.json()
+        batch_items = sorted(
+            [i for i in items if i["batch_id"] == batch_id],
+            key=lambda i: i["position"],
+        )
+        positions = [i["position"] for i in batch_items]
+        assert positions == [positions[0], positions[0] + 1, positions[0] + 2]
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_add_to_queue_quantity_with_print_options(
+        self, async_client: AsyncClient, printer_factory, archive_factory, db_session
+    ):
+        """Verify print options are applied to all batch items."""
+        printer = await printer_factory()
+        archive = await archive_factory()
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+            "quantity": 2,
+            "bed_levelling": False,
+            "timelapse": True,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        assert response.status_code == 200
+        batch_id = response.json()["batch_id"]
+
+        list_response = await async_client.get("/api/v1/queue/")
+        batch_items = [i for i in list_response.json() if i["batch_id"] == batch_id]
+        assert len(batch_items) == 2
+        for item in batch_items:
+            assert item["bed_levelling"] is False
+            assert item["timelapse"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_batch(self, async_client: AsyncClient, printer_factory, archive_factory, db_session):
+        """Verify batch can be retrieved with progress stats."""
+        printer = await printer_factory()
+        archive = await archive_factory()
+
+        # Create a batch of 3
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+            "quantity": 3,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        batch_id = response.json()["batch_id"]
+
+        # Get batch
+        response = await async_client.get(f"/api/v1/queue/batches/{batch_id}")
+        assert response.status_code == 200
+        result = response.json()
+        assert result["id"] == batch_id
+        assert result["quantity"] == 3
+        assert result["status"] == "active"
+        assert result["pending_count"] == 3
+        assert result["printing_count"] == 0
+        assert result["completed_count"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_list_batches(self, async_client: AsyncClient, printer_factory, archive_factory, db_session):
+        """Verify batches can be listed."""
+        printer = await printer_factory()
+        archive = await archive_factory()
+
+        # Create two batches
+        for qty in [2, 3]:
+            await async_client.post(
+                "/api/v1/queue/",
+                json={"printer_id": printer.id, "archive_id": archive.id, "quantity": qty},
+            )
+
+        response = await async_client.get("/api/v1/queue/batches")
+        assert response.status_code == 200
+        batches = response.json()
+        assert len(batches) >= 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_cancel_batch(self, async_client: AsyncClient, printer_factory, archive_factory, db_session):
+        """Verify cancelling a batch cancels all pending items."""
+        printer = await printer_factory()
+        archive = await archive_factory()
+
+        data = {
+            "printer_id": printer.id,
+            "archive_id": archive.id,
+            "quantity": 3,
+        }
+        response = await async_client.post("/api/v1/queue/", json=data)
+        batch_id = response.json()["batch_id"]
+
+        # Cancel the batch
+        response = await async_client.delete(f"/api/v1/queue/batches/{batch_id}")
+        assert response.status_code == 200
+
+        # Verify all items are cancelled
+        list_response = await async_client.get("/api/v1/queue/")
+        batch_items = [i for i in list_response.json() if i["batch_id"] == batch_id]
+        for item in batch_items:
+            assert item["status"] == "cancelled"
+
+        # Verify batch status
+        batch_response = await async_client.get(f"/api/v1/queue/batches/{batch_id}")
+        assert batch_response.json()["status"] == "cancelled"
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_get_batch_not_found(self, async_client: AsyncClient):
+        """Verify 404 for non-existent batch."""
+        response = await async_client.get("/api/v1/queue/batches/9999")
+        assert response.status_code == 404

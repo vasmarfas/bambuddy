@@ -225,6 +225,7 @@ class PrinterStatus(BaseModel):
     ipcam: bool = False  # Live view enabled
     wifi_signal: int | None = None  # WiFi signal strength in dBm
     wired_network: bool = False  # Ethernet connection detected
+    door_open: bool = False  # Enclosure door open (X1/P1S/P2S/H2*)
     nozzles: list[NozzleInfoResponse] = []  # Nozzle hardware info (index 0=left/primary, 1=right)
     nozzle_rack: list[NozzleRackSlot] = []  # H2C 6-nozzle tool-changer rack
     print_options: PrintOptionsResponse | None = None  # AI detection and print options
@@ -267,7 +268,8 @@ class PrinterStatus(BaseModel):
     firmware_version: str | None = None
     # Developer LAN mode: True = enabled, False = disabled (MQTT encryption), None = unknown
     developer_mode: bool | None = None
-    # Queue: user has acknowledged plate is cleared for next queued print
-    plate_cleared: bool = False
+    # Queue: printer is awaiting the user to acknowledge the build plate is cleared
+    # after a finished/failed print. Persisted across restarts (#961).
+    awaiting_plate_clear: bool = False
     # AMS drying support
     supports_drying: bool = False

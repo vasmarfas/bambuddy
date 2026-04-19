@@ -9,6 +9,7 @@ import { useQuery, useQueries } from '@tanstack/react-query';
 import { api, supportApi, pendingUploadsApi, type Permission } from '../api/client';
 import { getIconByName } from './IconPicker';
 import { useIsSidebarCompact } from '../hooks/useIsSidebarCompact';
+import { useColorCatalogVersion } from '../hooks/useColorCatalogVersion';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { Card, CardHeader, CardContent } from './Card';
@@ -79,6 +80,11 @@ export function Layout() {
   const { mode, toggleMode } = useTheme();
   const { t } = useTranslation();
   const isSidebarCompact = useIsSidebarCompact();
+  // Re-render Layout (and the page rendered inside <Outlet />) whenever the
+  // backend color catalog is (re)populated, so pages that mounted before the
+  // catalog fetched — and cached HSL-fallback color names during their first
+  // render — refresh with the real catalog names. See #857.
+  useColorCatalogVersion();
   const { user, authEnabled, logout, hasPermission } = useAuth();
   const { showToast } = useToast();
   const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
@@ -238,7 +244,7 @@ export function Layout() {
   const needsClearPlate = printerStatusQueries.some(result => {
     const status = result.data;
     if (!status) return false;
-    return (status.state === 'FINISH' || status.state === 'FAILED') && !status.plate_cleared;
+    return !!status.awaiting_plate_clear;
   });
 
   // Calculate debug duration client-side for real-time updates
@@ -561,7 +567,7 @@ export function Layout() {
                         )}
                         {link.custom_icon ? (
                           <img
-                            src={`/api/v1/external-links/${link.id}/icon`}
+                            src={api.getExternalLinkIconUrl(link.id)}
                             alt=""
                             className="w-5 h-5 flex-shrink-0"
                           />
@@ -587,7 +593,7 @@ export function Layout() {
                         )}
                         {link.custom_icon ? (
                           <img
-                            src={`/api/v1/external-links/${link.id}/icon`}
+                            src={api.getExternalLinkIconUrl(link.id)}
                             alt=""
                             className="w-5 h-5 flex-shrink-0"
                           />
@@ -680,11 +686,11 @@ export function Layout() {
         )}
 
         {/* Footer */}
-        <div className="p-2 border-t border-bambu-dark-tertiary">
+        <div className="flex-shrink-0 p-2 border-t border-bambu-dark-tertiary">
           {isSidebarCompact || sidebarExpanded ? (
             <div className="flex flex-col gap-2 px-2">
               {/* Top row: icons */}
-              <div className="flex items-center justify-center gap-1">
+              <div className="flex items-center justify-center gap-1 flex-wrap">
                 {hasSwitchbarPlugs && (
                   <div className="relative">
                     <button
@@ -779,7 +785,7 @@ export function Layout() {
               </div>
             </div>
           ) : (
-            <div className="flex flex-col items-center gap-1">
+            <div className="flex flex-col items-center gap-1 overflow-y-auto max-h-[50vh]">
               {updateCheck?.update_available && (
                 <button
                   onClick={() => navigate('/settings')}

@@ -199,7 +199,7 @@ export function SpoolCatalogSettings() {
   };
 
   return (
-    <Card>
+    <Card id="card-spool-catalog">
       <CardHeader>
         <div className="flex items-center gap-2 mb-3">
           <Database className="w-5 h-5 text-bambu-gray" />

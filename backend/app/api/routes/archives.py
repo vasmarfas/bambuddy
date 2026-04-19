@@ -13,6 +13,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.auth import (
+    RequireCameraStreamTokenIfAuthEnabled,
     RequirePermissionIfAuthEnabled,
     require_ownership_permission,
 )
@@ -30,6 +31,34 @@ from backend.app.utils.threemf_tools import extract_nozzle_mapping_from_3mf
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/archives", tags=["archives"])
+
+
+def _safe_filename(filename: str) -> str:
+    """Extract basename from a client-supplied filename, preventing path traversal.
+
+    Normalizes backslashes (Windows paths) before extracting so that
+    '..\\\\..\\\\evil.3mf' is correctly stripped to 'evil.3mf' on Linux.
+    """
+    return Path(filename.replace("\\", "/")).name
+
+
+def _validate_user_filter_permission(current_user: User | None, created_by_id: int | None):
+    """Raise 403 if created_by_id filter is used without stats:filter_by_user permission."""
+    if created_by_id is None or current_user is None:
+        return
+    if current_user.is_admin:
+        return
+    if not current_user.has_permission(Permission.STATS_FILTER_BY_USER.value):
+        raise HTTPException(status_code=403, detail="Permission stats:filter_by_user required")
+
+
+def _apply_user_filter(conditions: list, created_by_id: int | None):
+    """Append created_by_id filter to conditions list if specified."""
+    if created_by_id is not None:
+        if created_by_id == -1:
+            conditions.append(PrintArchive.created_by_id.is_(None))
+        else:
+            conditions.append(PrintArchive.created_by_id == created_by_id)
 
 
 def compute_time_accuracy(archive: PrintArchive) -> dict:
@@ -246,16 +275,18 @@ async def list_archives(
 async def list_archives_slim(
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
+    created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
     limit: int = Query(default=10000, le=50000),
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
 ):
     """Lightweight archive listing for stats/dashboard widgets.
 
     Returns only the fields needed for client-side aggregation,
     skipping duplicate detection, file paths, and extra_data.
     """
+    _validate_user_filter_permission(current_user, created_by_id)
     filters = []
     if date_from:
         dt_from = datetime.combine(date_from, time.min, tzinfo=timezone.utc)
@@ -263,6 +294,7 @@ async def list_archives_slim(
     if date_to:
         dt_to = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
         filters.append(PrintArchive.created_at <= dt_to)
+    _apply_user_filter(filters, created_by_id)
 
     query = (
         select(
@@ -333,19 +365,37 @@ async def search_archives(
     from sqlalchemy import text
     from sqlalchemy.orm import selectinload
 
-    # Prepare search query - add wildcard for partial matches
-    search_term = q.strip()
-    if not search_term.endswith("*"):
-        search_term = f"{search_term}*"
+    from backend.app.core.db_dialect import is_sqlite
 
-    # Build the FTS query
-    # Using MATCH for FTS5 full-text search
-    fts_query = text("""
-        SELECT rowid FROM archive_fts
-        WHERE archive_fts MATCH :search_term
-        ORDER BY rank
-        LIMIT :limit OFFSET :offset
-    """)
+    search_term = q.strip()
+
+    # Build dialect-specific full-text search query
+    if is_sqlite():
+        # SQLite FTS5: wildcard suffix for partial matches
+        if not search_term.endswith("*"):
+            search_term = f"{search_term}*"
+        fts_query = text("""
+            SELECT rowid FROM archive_fts
+            WHERE archive_fts MATCH :search_term
+            ORDER BY rank
+            LIMIT :limit OFFSET :offset
+        """)
+    else:
+        # PostgreSQL: tsvector + plainto_tsquery with prefix matching
+        fts_query = text("""
+            SELECT id FROM print_archives
+            WHERE to_tsvector('simple',
+                COALESCE(print_name, '') || ' ' ||
+                COALESCE(filename, '') || ' ' ||
+                COALESCE(tags, '') || ' ' ||
+                COALESCE(notes, '') || ' ' ||
+                COALESCE(designer, '') || ' ' ||
+                COALESCE(filament_type, '')
+            ) @@ to_tsquery('simple', :search_term)
+            LIMIT :limit OFFSET :offset
+        """)
+        # Convert "benchy" to "benchy:*" for prefix matching in tsquery
+        search_term = " & ".join(f"{word}:*" for word in search_term.split() if word)
 
     try:
         result = await db.execute(fts_query, {"search_term": search_term, "limit": limit + 100, "offset": 0})
@@ -415,24 +465,30 @@ async def rebuild_search_index(
     """
     from sqlalchemy import text
 
+    from backend.app.core.db_dialect import is_sqlite
+
     try:
-        # Clear and rebuild the FTS index
-        await db.execute(text("DELETE FROM archive_fts"))
+        if is_sqlite():
+            # SQLite: rebuild FTS5 virtual table
+            await db.execute(text("DELETE FROM archive_fts"))
+            await db.execute(
+                text("""
+                INSERT INTO archive_fts(rowid, print_name, filename, tags, notes, designer, filament_type)
+                SELECT id, print_name, filename, tags, notes, designer, filament_type
+                FROM print_archives
+            """)
+            )
+            await db.commit()
 
-        # Repopulate from print_archives
-        await db.execute(
-            text("""
-            INSERT INTO archive_fts(rowid, print_name, filename, tags, notes, designer, filament_type)
-            SELECT id, print_name, filename, tags, notes, designer, filament_type
-            FROM print_archives
-        """)
-        )
+            result = await db.execute(text("SELECT COUNT(*) FROM archive_fts"))
+            count = result.scalar() or 0
+        else:
+            # PostgreSQL: GIN index is auto-maintained, just reindex
+            await db.execute(text("REINDEX INDEX idx_archives_fulltext"))
+            await db.commit()
 
-        await db.commit()
-
-        # Count entries
-        result = await db.execute(text("SELECT COUNT(*) FROM archive_fts"))
-        count = result.scalar() or 0
+            result = await db.execute(text("SELECT COUNT(*) FROM print_archives"))
+            count = result.scalar() or 0
 
         return {"message": f"Search index rebuilt with {count} entries"}
     except Exception as e:
@@ -447,8 +503,9 @@ async def analyze_failures(
     date_to: date | None = Query(None),
     printer_id: int | None = None,
     project_id: int | None = None,
+    created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.ARCHIVES_READ),
 ):
     """Analyze failure patterns across prints.
 
@@ -459,6 +516,8 @@ async def analyze_failures(
     - Recent failures
     - Weekly trend
     """
+    _validate_user_filter_permission(current_user, created_by_id)
+
     from backend.app.services.failure_analysis import FailureAnalysisService
 
     service = FailureAnalysisService(db)
@@ -468,6 +527,7 @@ async def analyze_failures(
         date_to=date_to,
         printer_id=printer_id,
         project_id=project_id,
+        created_by_id=created_by_id,
     )
 
 
@@ -578,10 +638,13 @@ async def export_stats(
     days: int = 30,
     printer_id: int | None = None,
     project_id: int | None = None,
+    created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
 ):
     """Export statistics summary to CSV or Excel format."""
+    _validate_user_filter_permission(current_user, created_by_id)
+
     from fastapi.responses import StreamingResponse
 
     from backend.app.services.export import ExportService
@@ -596,6 +659,7 @@ async def export_stats(
             days=days,
             printer_id=printer_id,
             project_id=project_id,
+            created_by_id=created_by_id,
         )
     except ImportError as e:
         raise HTTPException(500, str(e))
@@ -611,10 +675,13 @@ async def export_stats(
 async def get_archive_stats(
     date_from: date | None = Query(None, description="Start date (inclusive), YYYY-MM-DD"),
     date_to: date | None = Query(None, description="End date (inclusive), YYYY-MM-DD"),
+    created_by_id: int | None = Query(None, description="Filter by user who created the print (-1 for no user)"),
     db: AsyncSession = Depends(get_db),
-    _: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
+    current_user: User | None = RequirePermissionIfAuthEnabled(Permission.STATS_READ),
 ):
     """Get statistics across all archives."""
+    _validate_user_filter_permission(current_user, created_by_id)
+
     # Build date filter conditions
     base_conditions = []
     if date_from:
@@ -623,6 +690,7 @@ async def get_archive_stats(
     if date_to:
         dt_to = datetime.combine(date_to, time.max, tzinfo=timezone.utc)
         base_conditions.append(PrintArchive.created_at <= dt_to)
+    _apply_user_filter(base_conditions, created_by_id)
 
     # Total counts
     total_result = await db.execute(select(func.count(PrintArchive.id)).where(*base_conditions))
@@ -730,43 +798,25 @@ async def get_archive_stats(
     energy_cost_per_kwh_str = await get_setting(db, "energy_cost_per_kwh")
     energy_cost_per_kwh = float(energy_cost_per_kwh_str) if energy_cost_per_kwh_str else 0.15
 
-    # When date filters are active, smart plug lifetime totals can't be
-    # filtered by date range — fall back to per-print archive data instead.
+    total_energy_kwh: float = 0.0
+    total_energy_cost: float = 0.0
+    energy_data_warming_up = False
+
     if energy_tracking_mode == "total" and not date_from and not date_to:
-        # Total mode: sum up 'total' counter from all smart plugs (lifetime consumption)
-        from backend.app.models.smart_plug import SmartPlug
-        from backend.app.services.homeassistant import homeassistant_service
-        from backend.app.services.mqtt_relay import mqtt_relay
-        from backend.app.services.tasmota import tasmota_service
-
-        plugs_result = await db.execute(select(SmartPlug))
-        plugs = list(plugs_result.scalars().all())
-
-        # Configure HA service once (needed for homeassistant-type plugs)
-        ha_url = await get_setting(db, "ha_url") or ""
-        ha_token = await get_setting(db, "ha_token") or ""
-        homeassistant_service.configure(ha_url, ha_token)
-
-        total_energy_kwh = 0.0
-        for plug in plugs:
-            if plug.plug_type == "tasmota":
-                energy = await tasmota_service.get_energy(plug)
-                if energy and energy.get("total") is not None:
-                    total_energy_kwh += energy["total"]
-            elif plug.plug_type == "homeassistant":
-                energy = await homeassistant_service.get_energy(plug)
-                if energy and energy.get("total") is not None:
-                    total_energy_kwh += energy["total"]
-            elif plug.plug_type == "mqtt":
-                # MQTT plugs report "today" energy, not lifetime total
-                mqtt_data = mqtt_relay.smart_plug_service.get_plug_data(plug.id)
-                if mqtt_data and mqtt_data.energy is not None:
-                    total_energy_kwh += mqtt_data.energy
-
-        total_energy_kwh = round(total_energy_kwh, 3)
-        total_energy_cost = round(total_energy_kwh * energy_cost_per_kwh, 3)
+        # All-time total consumption — read live lifetime counters.
+        total_energy_kwh = await _sum_live_plug_totals(db)
+        total_energy_cost = total_energy_kwh * energy_cost_per_kwh
+    elif energy_tracking_mode == "total":
+        # Total consumption mode with a date filter (#941): use hourly snapshots
+        # to compute per-plug (endpoint - baseline) deltas.
+        total_energy_kwh, energy_data_warming_up = await _sum_snapshot_deltas(
+            db,
+            dt_from=(datetime.combine(date_from, time.min, tzinfo=timezone.utc) if date_from else None),
+            dt_to=(datetime.combine(date_to, time.max, tzinfo=timezone.utc) if date_to else None),
+        )
+        total_energy_cost = total_energy_kwh * energy_cost_per_kwh
     else:
-        # Print mode: sum up per-print energy from archives
+        # Per-print mode: sum the per-print energy column directly.
         energy_kwh_result = await db.execute(select(func.sum(PrintArchive.energy_kwh)).where(*base_conditions))
         total_energy_kwh = energy_kwh_result.scalar() or 0
 
@@ -786,7 +836,128 @@ async def get_archive_stats(
         time_accuracy_by_printer=accuracy_by_printer if accuracy_by_printer else None,
         total_energy_kwh=round(total_energy_kwh, 3),
         total_energy_cost=round(total_energy_cost, 3),
+        energy_data_warming_up=energy_data_warming_up,
     )
+
+
+async def _sum_live_plug_totals(db: AsyncSession) -> float:
+    """Sum the live lifetime counter from every smart plug.
+
+    Used for all-time "total consumption" mode. Only the current value is
+    available so this can't be date-filtered — use `_sum_snapshot_deltas` for
+    that case.
+    """
+    from backend.app.api.routes.settings import get_setting
+    from backend.app.models.smart_plug import SmartPlug
+    from backend.app.services.homeassistant import homeassistant_service
+    from backend.app.services.mqtt_relay import mqtt_relay
+    from backend.app.services.rest_smart_plug import rest_smart_plug_service
+    from backend.app.services.tasmota import tasmota_service
+
+    plugs_result = await db.execute(select(SmartPlug))
+    plugs = list(plugs_result.scalars().all())
+
+    ha_url = await get_setting(db, "ha_url") or ""
+    ha_token = await get_setting(db, "ha_token") or ""
+    homeassistant_service.configure(ha_url, ha_token)
+
+    total = 0.0
+    for plug in plugs:
+        if plug.plug_type == "tasmota":
+            energy = await tasmota_service.get_energy(plug)
+            if energy and energy.get("total") is not None:
+                total += energy["total"]
+        elif plug.plug_type == "homeassistant":
+            energy = await homeassistant_service.get_energy(plug)
+            if energy and energy.get("total") is not None:
+                total += energy["total"]
+        elif plug.plug_type == "mqtt":
+            # MQTT plugs only expose today's counter, not lifetime.
+            mqtt_data = mqtt_relay.smart_plug_service.get_plug_data(plug.id)
+            if mqtt_data and mqtt_data.energy is not None:
+                total += mqtt_data.energy
+        elif plug.plug_type == "rest":
+            energy = await rest_smart_plug_service.get_energy(plug)
+            if energy and energy.get("today") is not None:
+                total += energy["today"]
+    return total
+
+
+async def _sum_snapshot_deltas(
+    db: AsyncSession,
+    *,
+    dt_from: datetime | None,
+    dt_to: datetime | None,
+) -> tuple[float, bool]:
+    """Sum per-plug energy consumption over a date range using hourly snapshots.
+
+    For each plug:
+      * baseline  = last snapshot at or before `dt_from` (ideal)
+                    — if missing, fall back to the earliest snapshot ever
+                      recorded for the plug and flag the result as warming up.
+      * endpoint  = last snapshot at or before `dt_to` (or most recent overall)
+      * delta     = max(0, endpoint - baseline)  — clamp counter resets to 0.
+
+    Returns (total_kwh, warming_up). `warming_up = True` means at least one plug
+    had no baseline before `dt_from` (fresh install or fresh upgrade), so the
+    result undercounts the beginning of the range.
+    """
+    from backend.app.models.smart_plug import SmartPlug
+    from backend.app.models.smart_plug_energy_snapshot import SmartPlugEnergySnapshot
+
+    plug_ids_result = await db.execute(select(SmartPlug.id))
+    plug_ids = [row[0] for row in plug_ids_result.all()]
+    if not plug_ids:
+        return 0.0, False
+
+    total = 0.0
+    warming_up = False
+    for plug_id in plug_ids:
+        baseline: float | None = None
+        if dt_from is not None:
+            baseline_q = await db.execute(
+                select(SmartPlugEnergySnapshot.lifetime_kwh)
+                .where(
+                    SmartPlugEnergySnapshot.plug_id == plug_id,
+                    SmartPlugEnergySnapshot.recorded_at <= dt_from,
+                )
+                .order_by(SmartPlugEnergySnapshot.recorded_at.desc())
+                .limit(1)
+            )
+            baseline = baseline_q.scalar()
+        if baseline is None:
+            # No snapshot before range start — fall back to the earliest
+            # snapshot ever recorded. Result undercounts the pre-first-snapshot
+            # portion of the range; signal that to the frontend.
+            earliest_q = await db.execute(
+                select(SmartPlugEnergySnapshot.lifetime_kwh)
+                .where(SmartPlugEnergySnapshot.plug_id == plug_id)
+                .order_by(SmartPlugEnergySnapshot.recorded_at.asc())
+                .limit(1)
+            )
+            baseline = earliest_q.scalar()
+            if baseline is None:
+                # No snapshots at all for this plug yet.
+                warming_up = True
+                continue
+            warming_up = True
+
+        endpoint_conditions = [SmartPlugEnergySnapshot.plug_id == plug_id]
+        if dt_to is not None:
+            endpoint_conditions.append(SmartPlugEnergySnapshot.recorded_at <= dt_to)
+        endpoint_q = await db.execute(
+            select(SmartPlugEnergySnapshot.lifetime_kwh)
+            .where(*endpoint_conditions)
+            .order_by(SmartPlugEnergySnapshot.recorded_at.desc())
+            .limit(1)
+        )
+        endpoint = endpoint_q.scalar()
+        if endpoint is None:
+            continue
+
+        total += max(0.0, endpoint - baseline)
+
+    return total, warming_up
 
 
 @router.get("/tags")
@@ -1343,7 +1514,7 @@ async def create_archive_slicer_token(
     if not archive:
         raise HTTPException(404, "Archive not found")
 
-    token = create_slicer_download_token("archive", archive_id)
+    token = await create_slicer_download_token("archive", archive_id)
     return {"token": token}
 
 
@@ -1362,7 +1533,7 @@ async def download_archive_for_slicer(
     """
     from backend.app.core.auth import verify_slicer_download_token
 
-    if not verify_slicer_download_token(token, "archive", archive_id):
+    if not await verify_slicer_download_token(token, "archive", archive_id):
         raise HTTPException(403, "Invalid or expired download token")
 
     service = ArchiveService(db)
@@ -1385,10 +1556,11 @@ async def download_archive_for_slicer(
 async def get_thumbnail(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
+    _: None = RequireCameraStreamTokenIfAuthEnabled,
 ):
     """Get the thumbnail image.
 
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+    Requires a stream token query param (?token=xxx) when auth is enabled.
     """
     service = ArchiveService(db)
     archive = await service.get_archive(archive_id)
@@ -1416,10 +1588,11 @@ async def get_thumbnail(
 async def get_timelapse(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
+    _: None = RequireCameraStreamTokenIfAuthEnabled,
 ):
     """Get the timelapse video.
 
-    Note: Unauthenticated - loaded via <video> tags which can't send auth headers.
+    Requires a stream token query param (?token=xxx) when auth is enabled.
     """
     service = ArchiveService(db)
     archive = await service.get_archive(archive_id)
@@ -1812,12 +1985,13 @@ async def upload_timelapse(
         raise HTTPException(400, "File must be a video file (.mp4, .avi, .mkv)")
 
     content = await file.read()
-    success = await service.attach_timelapse(archive_id, content, file.filename)
+    safe_filename = _safe_filename(file.filename)
+    success = await service.attach_timelapse(archive_id, content, safe_filename)
 
     if not success:
         raise HTTPException(500, "Failed to attach timelapse")
 
-    return {"status": "attached", "filename": file.filename}
+    return {"status": "attached", "filename": safe_filename}
 
 
 @router.get("/{archive_id}/timelapse/info")
@@ -2047,10 +2221,11 @@ async def get_photo(
     archive_id: int,
     filename: str,
     db: AsyncSession = Depends(get_db),
+    _: None = RequireCameraStreamTokenIfAuthEnabled,
 ):
     """Get a specific photo.
 
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+    Requires a stream token query param (?token=xxx) when auth is enabled.
     """
     result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
     archive = result.scalar_one_or_none()
@@ -2118,10 +2293,11 @@ async def get_qrcode(
     request: Request,
     size: int = 200,
     db: AsyncSession = Depends(get_db),
+    _: None = RequireCameraStreamTokenIfAuthEnabled,
 ):
     """Generate a QR code that links to this archive.
 
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+    Requires a stream token query param (?token=xxx) when auth is enabled.
     """
     try:
         import qrcode
@@ -2430,13 +2606,14 @@ async def get_gcode(
 async def get_plate_preview(
     archive_id: int,
     db: AsyncSession = Depends(get_db),
+    _: None = RequireCameraStreamTokenIfAuthEnabled,
 ):
     """Get the plate preview image from the 3MF file.
 
     Returns the slicer-generated plate thumbnail which shows the model
     with correct colors and positioning.
 
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+    Requires a stream token query param (?token=xxx) when auth is enabled.
     """
     service = ArchiveService(db)
     archive = await service.get_archive(archive_id)
@@ -2505,8 +2682,9 @@ async def upload_archive(
     if not file.filename or not file.filename.endswith(".3mf"):
         raise HTTPException(400, "File must be a .3mf file")
 
-    # Save uploaded file temporarily
-    temp_path = settings.archive_dir / "temp" / file.filename
+    # Save uploaded file temporarily — strip directory components to prevent path traversal
+    safe_filename = _safe_filename(file.filename)
+    temp_path = settings.archive_dir / "temp" / safe_filename
     temp_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -2545,7 +2723,8 @@ async def upload_archives_bulk(
             errors.append({"filename": file.filename or "unknown", "error": "Not a .3mf file"})
             continue
 
-        temp_path = settings.archive_dir / "temp" / file.filename
+        safe_filename = _safe_filename(file.filename)
+        temp_path = settings.archive_dir / "temp" / safe_filename
         temp_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
@@ -2862,10 +3041,11 @@ async def get_plate_thumbnail(
     archive_id: int,
     plate_index: int,
     db: AsyncSession = Depends(get_db),
+    _: None = RequireCameraStreamTokenIfAuthEnabled,
 ):
     """Get the thumbnail image for a specific plate.
 
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+    Requires a stream token query param (?token=xxx) when auth is enabled.
     """
     service = ArchiveService(db)
     archive = await service.get_archive(archive_id)
@@ -3176,10 +3356,11 @@ async def get_project_image(
     archive_id: int,
     image_path: str,
     db: AsyncSession = Depends(get_db),
+    _: None = RequireCameraStreamTokenIfAuthEnabled,
 ):
     """Get an image from the 3MF project page.
 
-    Note: Unauthenticated - loaded via <img> tags which can't send auth headers.
+    Requires a stream token query param (?token=xxx) when auth is enabled.
     """
     from backend.app.services.archive import ProjectPageParser
 
@@ -3239,8 +3420,8 @@ async def upload_source_3mf(
         if old_source_path.exists():
             old_source_path.unlink()
 
-    # Save the source 3MF file - preserve original filename
-    source_filename = file.filename
+    # Save the source 3MF file - preserve original filename, strip directory components
+    source_filename = _safe_filename(file.filename)
     source_path = source_dir / source_filename
 
     content = await file.read()
@@ -3331,7 +3512,7 @@ async def create_source_slicer_token(
     if not archive.source_3mf_path:
         raise HTTPException(404, "No source 3MF attached to this archive")
 
-    token = create_slicer_download_token("source", archive_id)
+    token = await create_slicer_download_token("source", archive_id)
     return {"token": token}
 
 
@@ -3349,7 +3530,7 @@ async def download_source_3mf_for_slicer_with_token(
     """
     from backend.app.core.auth import verify_slicer_download_token
 
-    if not verify_slicer_download_token(token, "source", archive_id):
+    if not await verify_slicer_download_token(token, "source", archive_id):
         raise HTTPException(403, "Invalid or expired download token")
 
     result = await db.execute(select(PrintArchive).where(PrintArchive.id == archive_id))
@@ -3386,10 +3567,12 @@ async def upload_source_3mf_by_name(
     if not file.filename or not file.filename.endswith(".3mf"):
         raise HTTPException(400, "File must be a .3mf file")
 
+    safe_filename = _safe_filename(file.filename)
+
     # Derive print name from filename if not provided
     if not print_name:
         # Remove .3mf extension and common suffixes
-        print_name = file.filename.rsplit(".3mf", 1)[0]
+        print_name = safe_filename.rsplit(".3mf", 1)[0]
         # Remove _source suffix if present
         if print_name.endswith("_source"):
             print_name = print_name[:-7]
@@ -3438,8 +3621,8 @@ async def upload_source_3mf_by_name(
         if old_source_path.exists():
             old_source_path.unlink()
 
-    # Save the source 3MF file - preserve original filename
-    source_filename = file.filename
+    # Save the source 3MF file - preserve original filename, strip directory components
+    source_filename = safe_filename
     source_path = source_dir / source_filename
 
     content = await file.read()
@@ -3519,8 +3702,8 @@ async def upload_f3d(
         if old_f3d_path.exists():
             old_f3d_path.unlink()
 
-    # Save the F3D file - preserve original filename
-    f3d_filename = file.filename
+    # Save the F3D file - preserve original filename, strip directory components
+    f3d_filename = _safe_filename(file.filename)
     f3d_path = f3d_dir / f3d_filename
 
     content = await file.read()

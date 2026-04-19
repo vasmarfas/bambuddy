@@ -873,3 +873,59 @@ describe('X1C model tests (single nozzle, real data)', () => {
     });
   });
 });
+
+describe('computeAmsMapping preferLowest', () => {
+  it('picks spool with lowest remain when enabled', () => {
+    const reqs = {
+      filaments: [{ slot_id: 1, type: 'PLA', color: '#FF0000', used_grams: 10 }],
+    };
+    const status = createPrinterStatus([
+      {
+        id: 0,
+        tray: [
+          { id: 0, tray_type: 'PLA', tray_color: 'FF0000', remain: 80 },
+          { id: 1, tray_type: 'PLA', tray_color: 'FF0000', remain: 25 },
+        ],
+      },
+    ]);
+
+    const result = computeAmsMapping(reqs, status, true);
+    expect(result).toEqual([1]); // Tray 1 has 25% remain
+  });
+
+  it('picks first match when disabled', () => {
+    const reqs = {
+      filaments: [{ slot_id: 1, type: 'PLA', color: '#FF0000', used_grams: 10 }],
+    };
+    const status = createPrinterStatus([
+      {
+        id: 0,
+        tray: [
+          { id: 0, tray_type: 'PLA', tray_color: 'FF0000', remain: 80 },
+          { id: 1, tray_type: 'PLA', tray_color: 'FF0000', remain: 25 },
+        ],
+      },
+    ]);
+
+    const result = computeAmsMapping(reqs, status, false);
+    expect(result).toEqual([0]); // First match (default)
+  });
+
+  it('sorts unknown remain to end', () => {
+    const reqs = {
+      filaments: [{ slot_id: 1, type: 'PLA', color: '#FF0000', used_grams: 10 }],
+    };
+    const status = createPrinterStatus([
+      {
+        id: 0,
+        tray: [
+          { id: 0, tray_type: 'PLA', tray_color: 'FF0000' },  // No remain (defaults to -1)
+          { id: 1, tray_type: 'PLA', tray_color: 'FF0000', remain: 60 },
+        ],
+      },
+    ]);
+
+    const result = computeAmsMapping(reqs, status, true);
+    expect(result).toEqual([1]); // Known 60% over unknown
+  });
+});

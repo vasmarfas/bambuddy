@@ -44,11 +44,19 @@ body:
         - Print Queue & Scheduling
         - Smart Plugs
         - Notifications
+        - Spool Inventory
         - Spoolman Integration
         - Cloud Profiles
         - K-Profiles
         - Maintenance Tracking
         - File Manager
+        - SpoolBuddy - Dashboard
+        - SpoolBuddy - AMS Management
+        - SpoolBuddy - NFC / Tag Writing
+        - SpoolBuddy - Scale / Calibration
+        - SpoolBuddy - Inventory
+        - SpoolBuddy - Settings / Updates
+        - SpoolBuddy - Hardware / Installation
         - UI/UX
         - API
         - Other

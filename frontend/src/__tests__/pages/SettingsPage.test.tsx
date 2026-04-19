@@ -222,6 +222,90 @@ describe('SettingsPage', () => {
     });
   });
 
+  describe('Workflow tab', () => {
+    it('can switch to Workflow tab', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Workflow')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Workflow'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Staggered Start')).toBeInTheDocument();
+      });
+    });
+
+    it('shows stagger settings on Workflow tab', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Workflow')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Workflow'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Staggered Start')).toBeInTheDocument();
+        expect(screen.getByText('Group size')).toBeInTheDocument();
+        expect(screen.getByText('Interval (minutes)')).toBeInTheDocument();
+      });
+    });
+
+    it('shows auto-drying settings on Workflow tab', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Workflow')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Workflow'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Queue Auto-Drying')).toBeInTheDocument();
+      });
+    });
+
+    it('shows default print options on Workflow tab', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Workflow')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Workflow'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Default Print Options')).toBeInTheDocument();
+        expect(screen.getByText('Bed Levelling')).toBeInTheDocument();
+        expect(screen.getByText('Flow Calibration')).toBeInTheDocument();
+        expect(screen.getByText('Vibration Calibration')).toBeInTheDocument();
+        expect(screen.getByText('First Layer Inspection')).toBeInTheDocument();
+        expect(screen.getByText('Timelapse')).toBeInTheDocument();
+      });
+    });
+
+    it('shows default print options description', async () => {
+      const user = userEvent.setup();
+      render(<SettingsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Workflow')).toBeInTheDocument();
+      });
+
+      await user.click(screen.getByText('Workflow'));
+
+      await waitFor(() => {
+        expect(screen.getByText(/overridden per print in the print dialog/)).toBeInTheDocument();
+      });
+    });
+  });
+
   describe('API Keys tab', () => {
     it('can switch to API Keys tab', async () => {
       const user = userEvent.setup();
@@ -236,6 +320,105 @@ describe('SettingsPage', () => {
       await waitFor(() => {
         // Button text is "Create Key"
         expect(screen.getByText('Create Key')).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('SpoolBuddy tab badge', () => {
+    const baseDevice = {
+      id: 1,
+      device_id: 'sb-0001',
+      hostname: 'sb-kitchen',
+      ip_address: '10.0.0.1',
+      backend_url: null,
+      firmware_version: '1.0.0',
+      has_nfc: true,
+      has_scale: true,
+      tare_offset: 0,
+      calibration_factor: 1.0,
+      nfc_reader_type: null,
+      nfc_connection: null,
+      display_brightness: 100,
+      display_blank_timeout: 0,
+      has_backlight: false,
+      last_calibrated_at: null,
+      last_seen: new Date().toISOString(),
+      pending_command: null,
+      nfc_ok: true,
+      scale_ok: true,
+      uptime_s: 100,
+      update_status: null,
+      update_message: null,
+      system_stats: null,
+      online: true,
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: '2024-01-01T00:00:00Z',
+    };
+
+    it('shows device count and green bullet when at least one device is online', async () => {
+      server.use(
+        http.get('/api/v1/spoolbuddy/devices', () => {
+          return HttpResponse.json([
+            { ...baseDevice, id: 1, device_id: 'sb-0001', hostname: 'sb-kitchen', online: true },
+            { ...baseDevice, id: 2, device_id: 'sb-0002', hostname: 'sb-ghost', online: false },
+          ]);
+        })
+      );
+      render(<SettingsPage />);
+
+      // Find the tab button (not the header) — it's the <button> containing the SpoolBuddy text
+      const tabButton = await waitFor(() => {
+        const buttons = screen.getAllByRole('button').filter((b) => b.textContent?.includes('SpoolBuddy'));
+        expect(buttons.length).toBeGreaterThan(0);
+        return buttons[0];
+      });
+
+      // Count pill rendered
+      await waitFor(() => {
+        expect(tabButton.textContent).toContain('2');
+      });
+
+      // Green status bullet (at least one device online)
+      await waitFor(() => {
+        expect(tabButton.querySelector('.bg-green-400')).not.toBeNull();
+      });
+    });
+
+    it('shows gray bullet when all devices are offline', async () => {
+      server.use(
+        http.get('/api/v1/spoolbuddy/devices', () => {
+          return HttpResponse.json([{ ...baseDevice, online: false }]);
+        })
+      );
+      render(<SettingsPage />);
+
+      const tabButton = await waitFor(() => {
+        const buttons = screen.getAllByRole('button').filter((b) => b.textContent?.includes('SpoolBuddy'));
+        expect(buttons.length).toBeGreaterThan(0);
+        return buttons[0];
+      });
+
+      await waitFor(() => {
+        expect(tabButton.querySelector('.bg-gray-500')).not.toBeNull();
+        expect(tabButton.querySelector('.bg-green-400')).toBeNull();
+      });
+    });
+
+    it('hides the count pill when no devices are registered', async () => {
+      server.use(
+        http.get('/api/v1/spoolbuddy/devices', () => HttpResponse.json([]))
+      );
+      render(<SettingsPage />);
+
+      const tabButton = await waitFor(() => {
+        const buttons = screen.getAllByRole('button').filter((b) => b.textContent?.includes('SpoolBuddy'));
+        expect(buttons.length).toBeGreaterThan(0);
+        return buttons[0];
+      });
+
+      // The only numeric content should NOT be present — tab label only
+      await waitFor(() => {
+        expect(tabButton.textContent).toBe('SpoolBuddy');
       });
     });
   });

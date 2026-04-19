@@ -28,6 +28,7 @@ from backend.app.schemas.spoolbuddy import (
     ScaleReadingRequest,
     SetCalibrationFactorRequest,
     SetTareRequest,
+    SystemCommandRequest,
     SystemCommandResultRequest,
     SystemConfigRequest,
     TagRemovedRequest,
@@ -185,6 +186,26 @@ async def list_devices(
     result = await db.execute(select(SpoolBuddyDevice).order_by(SpoolBuddyDevice.hostname))
     devices = list(result.scalars().all())
     return [_device_to_response(d) for d in devices]
+
+
+@router.delete("/devices/{device_id}")
+async def unregister_device(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_DELETE),
+):
+    """Unregister a SpoolBuddy device. The daemon can re-register via heartbeat later."""
+    result = await db.execute(select(SpoolBuddyDevice).where(SpoolBuddyDevice.device_id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not registered")
+
+    await db.delete(device)
+    await db.commit()
+    _spoolbuddy_online_last_broadcast.pop(device_id, None)
+    logger.info("SpoolBuddy device unregistered: %s (%s)", device_id, device.hostname)
+    await ws_manager.broadcast({"type": "spoolbuddy_unregistered", "device_id": device_id})
+    return {"status": "deleted", "device_id": device_id}
 
 
 @router.post("/devices/{device_id}/heartbeat", response_model=HeartbeatResponse)
@@ -609,6 +630,28 @@ async def get_calibration(
 # --- Display settings ---
 
 
+@router.get("/devices/{device_id}/display")
+async def get_display_settings(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.INVENTORY_UPDATE),
+):
+    """Read current display brightness and screen blank timeout for a device.
+
+    Used by the SpoolBuddy kiosk idle watchdog on autostart to configure
+    swayidle with the same timeout the user picked in the UI, without having
+    to wait for the daemon heartbeat to arrive first.
+    """
+    result = await db.execute(select(SpoolBuddyDevice).where(SpoolBuddyDevice.device_id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not registered")
+    return {
+        "brightness": device.display_brightness,
+        "blank_timeout": device.display_blank_timeout,
+    }
+
+
 @router.put("/devices/{device_id}/display")
 async def update_display_settings(
     device_id: str,
@@ -667,6 +710,38 @@ async def queue_system_config_update(
 
     logger.info("Queued system config update for device %s", device_id)
     return {"status": "queued", "message": "System config update queued"}
+
+
+VALID_SYSTEM_COMMANDS = {"reboot", "shutdown", "restart_daemon", "restart_browser"}
+
+
+@router.post("/devices/{device_id}/system/command")
+async def queue_system_command(
+    device_id: str,
+    req: SystemCommandRequest,
+    db: AsyncSession = Depends(get_db),
+    _: User | None = RequirePermissionIfAuthEnabled(Permission.SETTINGS_UPDATE),
+):
+    """Queue a system command (reboot, shutdown, restart_daemon, restart_browser) for the SpoolBuddy device."""
+    if req.command not in VALID_SYSTEM_COMMANDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid command. Must be one of: {', '.join(sorted(VALID_SYSTEM_COMMANDS))}",
+        )
+
+    result = await db.execute(select(SpoolBuddyDevice).where(SpoolBuddyDevice.device_id == device_id))
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not registered")
+
+    if not _is_online(device):
+        raise HTTPException(status_code=409, detail="Device is offline")
+
+    device.pending_command = req.command
+    await db.commit()
+
+    logger.info("System command queued for device %s: %s", device_id, req.command)
+    return {"status": "queued", "command": req.command}
 
 
 @router.post("/devices/{device_id}/system/command-result")

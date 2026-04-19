@@ -42,8 +42,16 @@ def _is_docker_environment() -> bool:
                 return True
     except (FileNotFoundError, PermissionError):
         pass  # cgroup file unavailable; continue with other detection methods
-    git_dir = settings.base_dir / ".git"
-    return not git_dir.exists()
+    # Check container runtime hint (systemd sets this for Docker/podman,
+    # but NOT for LXC/LXD — avoids false positives on Proxmox containers)
+    try:
+        with open("/run/systemd/container") as f:
+            runtime = f.read().strip()
+            if runtime in ("docker", "podman", "oci"):
+                return True
+    except (FileNotFoundError, PermissionError):
+        pass
+    return False
 
 
 def _find_executable(name: str) -> str | None:

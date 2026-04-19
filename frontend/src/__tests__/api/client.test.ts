@@ -7,23 +7,23 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { setAuthToken, getAuthToken, api } from '../../api/client';
 
-// Mock localStorage
-const localStorageMock = {
+// Mock sessionStorage (H-5: tokens are stored in sessionStorage, not localStorage)
+const sessionStorageMock = {
   store: {} as Record<string, string>,
-  getItem: vi.fn((key: string) => localStorageMock.store[key] || null),
+  getItem: vi.fn((key: string) => sessionStorageMock.store[key] || null),
   setItem: vi.fn((key: string, value: string) => {
-    localStorageMock.store[key] = value;
+    sessionStorageMock.store[key] = value;
   }),
   removeItem: vi.fn((key: string) => {
-    delete localStorageMock.store[key];
+    delete sessionStorageMock.store[key];
   }),
   clear: vi.fn(() => {
-    localStorageMock.store = {};
+    sessionStorageMock.store = {};
   }),
 };
 
-Object.defineProperty(window, 'localStorage', {
-  value: localStorageMock,
+Object.defineProperty(window, 'sessionStorage', {
+  value: sessionStorageMock,
 });
 
 // Create MSW server
@@ -32,22 +32,22 @@ const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledRequest: 'bypass' }));
 afterEach(() => {
   server.resetHandlers();
-  localStorageMock.clear();
+  sessionStorageMock.clear();
   setAuthToken(null);
 });
 afterAll(() => server.close());
 
 describe('Auth Token Management', () => {
-  it('setAuthToken stores token in localStorage', () => {
+  it('setAuthToken stores token in sessionStorage', () => {
     setAuthToken('test-token-123');
-    expect(localStorageMock.setItem).toHaveBeenCalledWith('auth_token', 'test-token-123');
+    expect(sessionStorageMock.setItem).toHaveBeenCalledWith('auth_token', 'test-token-123');
     expect(getAuthToken()).toBe('test-token-123');
   });
 
-  it('setAuthToken removes token from localStorage when null', () => {
+  it('setAuthToken removes token from sessionStorage when null', () => {
     setAuthToken('test-token-123');
     setAuthToken(null);
-    expect(localStorageMock.removeItem).toHaveBeenCalledWith('auth_token');
+    expect(sessionStorageMock.removeItem).toHaveBeenCalledWith('auth_token');
     expect(getAuthToken()).toBeNull();
   });
 });
@@ -115,7 +115,7 @@ describe('API Client Auth Header', () => {
     }
 
     expect(getAuthToken()).toBeNull();
-    expect(localStorageMock.removeItem).toHaveBeenCalledWith('auth_token');
+    expect(sessionStorageMock.removeItem).toHaveBeenCalledWith('auth_token');
   });
 
   it('does not clear token on 401 with generic auth error', async () => {
@@ -204,5 +204,40 @@ describe('FormData requests include auth header', () => {
 
     expect(capturedHeaders).not.toBeNull();
     expect(capturedHeaders!.get('Authorization')).toBe('Bearer test-token');
+  });
+});
+
+describe('Printer control endpoints', () => {
+  it('refreshPrinterStatus POSTs to /printers/:id/refresh-status', async () => {
+    let calledUrl: string | null = null;
+    let calledMethod: string | null = null;
+    server.use(
+      http.post('/api/v1/printers/:id/refresh-status', ({ request, params }) => {
+        calledUrl = `/printers/${params.id}/refresh-status`;
+        calledMethod = request.method;
+        return HttpResponse.json({ status: 'ok' });
+      }),
+    );
+
+    const result = await api.refreshPrinterStatus(7);
+    expect(calledMethod).toBe('POST');
+    expect(calledUrl).toBe('/printers/7/refresh-status');
+    expect(result).toEqual({ status: 'ok' });
+  });
+
+  it('setAirductMode passes mode in query string', async () => {
+    let capturedUrl = '';
+    server.use(
+      http.post('/api/v1/printers/:id/airduct-mode', ({ request }) => {
+        capturedUrl = request.url;
+        return HttpResponse.json({ success: true, message: 'ok' });
+      }),
+    );
+
+    await api.setAirductMode(3, 'cooling');
+    expect(capturedUrl).toContain('mode=cooling');
+
+    await api.setAirductMode(3, 'heating');
+    expect(capturedUrl).toContain('mode=heating');
   });
 });

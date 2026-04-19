@@ -37,6 +37,10 @@ class AppSettings(BaseModel):
         default=False,
         description="Disable insufficient filament warnings when printing or queueing prints",
     )
+    prefer_lowest_filament: bool = Field(
+        default=False,
+        description="When multiple AMS spools match, prefer the one with lowest remaining filament",
+    )
 
     # Updates
     check_updates: bool = Field(default=True, description="Automatically check for updates on startup")
@@ -79,6 +83,19 @@ class AppSettings(BaseModel):
         default="",
         description="JSON blob of drying presets per filament type (empty = use built-in defaults)",
     )
+
+    # Auto-print G-code injection (#422)
+    gcode_snippets: str = Field(
+        default="",
+        description="JSON: per-model G-code injection snippets {model: {start_gcode, end_gcode}}",
+    )
+
+    # Scheduled local backup (#884)
+    local_backup_enabled: bool = Field(default=False, description="Enable scheduled local backups")
+    local_backup_schedule: str = Field(default="daily", description="Backup frequency: hourly, daily, weekly")
+    local_backup_time: str = Field(default="03:00", description="Time of day for daily/weekly backups (HH:MM, 24h)")
+    local_backup_retention: int = Field(default=5, description="Number of backup files to keep (1-100)")
+    local_backup_path: str = Field(default="", description="Backup output directory (empty = DATA_DIR/backups)")
 
     # Print modal settings
     per_printer_mapping_expanded: bool = Field(
@@ -186,6 +203,84 @@ class AppSettings(BaseModel):
         description="Enable user email notifications for print job events (requires Advanced Authentication)",
     )
 
+    # Default print options
+    default_bed_levelling: bool = Field(default=True, description="Default bed levelling option for new prints")
+    default_flow_cali: bool = Field(default=False, description="Default flow calibration option for new prints")
+    default_vibration_cali: bool = Field(
+        default=True, description="Default vibration calibration option for new prints"
+    )
+    default_layer_inspect: bool = Field(
+        default=False, description="Default first layer inspection option for new prints"
+    )
+    default_timelapse: bool = Field(default=False, description="Default timelapse option for new prints")
+
+    # Staggered batch start for multi-printer jobs
+    stagger_group_size: int = Field(
+        default=2, ge=1, le=50, description="Number of printers to start simultaneously in staggered mode"
+    )
+    stagger_interval_minutes: int = Field(
+        default=5, ge=1, le=60, description="Minutes between staggered printer groups"
+    )
+
+    # Plate-clear confirmation for queue scheduling
+    require_plate_clear: bool = Field(
+        default=False,
+        description="Require per-printer plate-clear confirmation before starting queued prints on finished printers",
+    )
+    queue_shortest_first: bool = Field(
+        default=False,
+        description="Shortest Job First — scheduler prioritizes shorter print jobs over longer ones",
+    )
+
+    # LDAP authentication (#794)
+    ldap_enabled: bool = Field(default=False, description="Enable LDAP authentication")
+    ldap_server_url: str = Field(default="", description="LDAP server URL (e.g., ldap://ldap.example.com:389)")
+    ldap_bind_dn: str = Field(default="", description="Bind DN for LDAP searches (e.g., cn=admin,dc=example,dc=com)")
+    ldap_bind_password: str = Field(default="", description="Bind password for LDAP searches")
+    ldap_search_base: str = Field(default="", description="Search base DN (e.g., ou=users,dc=example,dc=com)")
+    ldap_user_filter: str = Field(
+        default="(sAMAccountName={username})",
+        description="LDAP user search filter. {username} is replaced with the login username",
+    )
+    ldap_security: str = Field(default="starttls", description="LDAP security: 'starttls' or 'ldaps'")
+    ldap_group_mapping: str = Field(
+        default="",
+        description="JSON: LDAP group to BamBuddy group mapping {ldap_group_dn: bambuddy_group_name}",
+    )
+    ldap_auto_provision: bool = Field(
+        default=False,
+        description="Auto-create BamBuddy user on first successful LDAP login",
+    )
+    ldap_default_group: str = Field(
+        default="",
+        description="Fallback BamBuddy group name assigned when an LDAP user authenticates but has no mapped groups. Empty = no fallback.",
+    )
+
+    # Obico AI failure detection (#172)
+    obico_enabled: bool = Field(default=False, description="Enable Obico AI print failure detection")
+    obico_ml_url: str = Field(
+        default="",
+        description="Self-hosted Obico ML API base URL (e.g., http://192.168.1.10:3333)",
+    )
+    obico_sensitivity: str = Field(
+        default="medium",
+        description="Detection sensitivity: 'low', 'medium', or 'high' (adjusts LOW/HIGH thresholds)",
+    )
+    obico_action: str = Field(
+        default="notify",
+        description="Action on detected failure: 'notify', 'pause', or 'pause_and_off'",
+    )
+    obico_poll_interval: int = Field(
+        default=10,
+        ge=5,
+        le=120,
+        description="Seconds between detection checks while a print is running",
+    )
+    obico_enabled_printers: str = Field(
+        default="",
+        description="JSON array of printer IDs to monitor (empty = all connected printers)",
+    )
+
     # Default sidebar order (admin-set for all users)
     default_sidebar_order: str = Field(
         default="",
@@ -209,6 +304,7 @@ class AppSettingsUpdate(BaseModel):
     spoolman_disable_weight_sync: bool | None = None
     spoolman_report_partial_usage: bool | None = None
     disable_filament_warnings: bool | None = None
+    prefer_lowest_filament: bool | None = None
     check_updates: bool | None = None
     check_printer_firmware: bool | None = None
     include_beta_updates: bool | None = None
@@ -260,7 +356,95 @@ class AppSettingsUpdate(BaseModel):
     prometheus_token: str | None = None
     low_stock_threshold: float | None = Field(default=None, ge=0.1, le=99.9)
     user_notifications_enabled: bool | None = None
+    default_bed_levelling: bool | None = None
+    default_flow_cali: bool | None = None
+    default_vibration_cali: bool | None = None
+    default_layer_inspect: bool | None = None
+    default_timelapse: bool | None = None
+    stagger_group_size: int | None = Field(default=None, ge=1, le=50)
+    stagger_interval_minutes: int | None = Field(default=None, ge=1, le=60)
+    require_plate_clear: bool | None = None
+    queue_shortest_first: bool | None = None
+    gcode_snippets: str | None = None
+    local_backup_enabled: bool | None = None
+    local_backup_schedule: str | None = None
+    local_backup_time: str | None = None
+    local_backup_retention: int | None = None
+    local_backup_path: str | None = None
+    ldap_enabled: bool | None = None
+    ldap_server_url: str | None = None
+    ldap_bind_dn: str | None = None
+    ldap_bind_password: str | None = None
+    ldap_search_base: str | None = None
+    ldap_user_filter: str | None = None
+    ldap_security: str | None = None
+    ldap_group_mapping: str | None = None
+    ldap_auto_provision: bool | None = None
+    ldap_default_group: str | None = None
+    obico_enabled: bool | None = None
+    obico_ml_url: str | None = None
+    obico_sensitivity: str | None = None
+    obico_action: str | None = None
+    obico_poll_interval: int | None = Field(default=None, ge=5, le=120)
+    obico_enabled_printers: str | None = None
     default_sidebar_order: str | None = None
+
+    @field_validator("gcode_snippets")
+    @classmethod
+    def validate_gcode_snippets(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return v
+        try:
+            parsed = json.loads(v)
+        except json.JSONDecodeError:
+            raise ValueError("gcode_snippets must be valid JSON or empty")
+        if not isinstance(parsed, dict):
+            raise ValueError("gcode_snippets must be a JSON object keyed by printer model")
+        return v
+
+    @field_validator("ldap_group_mapping")
+    @classmethod
+    def validate_ldap_group_mapping(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return v
+        try:
+            parsed = json.loads(v)
+        except json.JSONDecodeError:
+            raise ValueError("ldap_group_mapping must be valid JSON or empty")
+        if not isinstance(parsed, dict):
+            raise ValueError("ldap_group_mapping must be a JSON object mapping LDAP group DNs to BamBuddy group names")
+        return v
+
+    @field_validator("obico_enabled_printers")
+    @classmethod
+    def validate_obico_enabled_printers(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return v
+        try:
+            parsed = json.loads(v)
+        except json.JSONDecodeError:
+            raise ValueError("obico_enabled_printers must be valid JSON or empty")
+        if not isinstance(parsed, list) or not all(isinstance(item, int) for item in parsed):
+            raise ValueError("obico_enabled_printers must be a JSON array of printer IDs (integers)")
+        return v
+
+    @field_validator("obico_sensitivity")
+    @classmethod
+    def validate_obico_sensitivity(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if v not in ("low", "medium", "high"):
+            raise ValueError("obico_sensitivity must be 'low', 'medium', or 'high'")
+        return v
+
+    @field_validator("obico_action")
+    @classmethod
+    def validate_obico_action(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if v not in ("notify", "pause", "pause_and_off"):
+            raise ValueError("obico_action must be 'notify', 'pause', or 'pause_and_off'")
+        return v
 
     @field_validator("default_sidebar_order")
     @classmethod

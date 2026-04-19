@@ -203,10 +203,19 @@ export function isPlaceholderDate(scheduledTime: string | null | undefined): boo
  */
 export function autoMatchFilament(
   req: { type?: string; color?: string; nozzle_id?: number | null },
-  loadedFilaments: { globalTrayId: number; type?: string; color?: string; extruderId?: number }[],
+  loadedFilaments: { globalTrayId: number; type?: string; color?: string; extruderId?: number; remain?: number }[],
   usedTrayIds: Set<number>,
+  preferLowest?: boolean,
 ): typeof loadedFilaments[number] | undefined {
-  const nozzleFilaments = filterFilamentsByNozzle(loadedFilaments, req.nozzle_id);
+  let nozzleFilaments = filterFilamentsByNozzle(loadedFilaments, req.nozzle_id);
+
+  if (preferLowest) {
+    nozzleFilaments = [...nozzleFilaments].sort((a, b) => {
+      const ra = (a.remain ?? -1) >= 0 ? (a.remain ?? -1) : 101;
+      const rb = (b.remain ?? -1) >= 0 ? (b.remain ?? -1) : 101;
+      return ra - rb;
+    });
+  }
 
   const exactMatch = nozzleFilaments.find(
     (f) =>

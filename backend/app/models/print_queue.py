@@ -33,6 +33,7 @@ class PrintQueueItem(Base):
         ForeignKey("library_files.id", ondelete="CASCADE"), nullable=True
     )
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), nullable=True)
+    batch_id: Mapped[int | None] = mapped_column(ForeignKey("print_batches.id", ondelete="SET NULL"), nullable=True)
 
     # Scheduling
     position: Mapped[int] = mapped_column(Integer, default=0)  # Queue order
@@ -56,6 +57,13 @@ class PrintQueueItem(Base):
 
     # Plate ID for multi-plate 3MF files (1-indexed, None = auto-detect/plate 1)
     plate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Shortest-job-first scheduling
+    print_time_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)  # Cached from archive/library
+    been_jumped: Mapped[bool] = mapped_column(Boolean, default=False)  # Starvation guard for SJF
+
+    # Auto-print G-code injection (#422)
+    gcode_injection: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Print options
     bed_levelling: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -84,11 +92,13 @@ class PrintQueueItem(Base):
     archive: Mapped["PrintArchive | None"] = relationship()
     library_file: Mapped["LibraryFile | None"] = relationship()
     project: Mapped["Project | None"] = relationship(back_populates="queue_items")
+    batch: Mapped["PrintBatch | None"] = relationship(back_populates="queue_items")
     created_by: Mapped["User | None"] = relationship()
 
 
 from backend.app.models.archive import PrintArchive  # noqa: E402
 from backend.app.models.library import LibraryFile  # noqa: E402
+from backend.app.models.print_batch import PrintBatch  # noqa: E402
 from backend.app.models.printer import Printer  # noqa: E402
 from backend.app.models.project import Project  # noqa: E402
 from backend.app.models.user import User  # noqa: E402
