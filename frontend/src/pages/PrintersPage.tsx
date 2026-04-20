@@ -4768,7 +4768,7 @@ function PrinterCard({
             <div className="flex flex-col gap-2">
               <button
                 onClick={() => {
-                  homeAxesMutation.mutate('z');
+                  homeAxesMutation.mutate('all');
                   setShowNotHomedModal(null);
                 }}
                 className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-bambu-green/20 text-bambu-green hover:bg-bambu-green/30 transition-colors"

@@ -341,10 +341,10 @@ export default {
       down: 'Platte runter',
       disabledWhilePrinting: 'Während des Drucks deaktiviert',
       notHomedTitle: 'Drucker ist nicht referenziert',
-      notHomedMessage: 'Die Z-Achse wurde seit dem letzten Druck nicht referenziert. Referenzieren Sie Z zuerst für eine sichere Positionierung oder bewegen Sie trotzdem — die Software-Endschalter werden dabei umgangen.',
-      homeZ: 'Z referenzieren',
+      notHomedMessage: 'Der Drucker wurde seit dem letzten Druck nicht referenziert. Führen Sie zuerst die automatische Referenzfahrt aus (parkt den Werkzeugkopf und referenziert dann X, Y und Z) oder bewegen Sie trotzdem — die Software-Endschalter werden dabei umgangen.',
+      homeZ: 'Automatische Referenzfahrt',
       moveAnyway: 'Trotzdem bewegen',
-      homingStarted: 'Z-Achse wird referenziert…',
+      homingStarted: 'Drucker wird automatisch referenziert…',
     },
     // Permissions
     permission: {

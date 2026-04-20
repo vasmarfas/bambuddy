@@ -341,10 +341,10 @@ export default {
       down: 'Descendre le plateau',
       disabledWhilePrinting: 'Désactivé pendant l\'impression',
       notHomedTitle: 'Imprimante non référencée',
-      notHomedMessage: 'L\'axe Z n\'a pas été référencé depuis la dernière impression. Référencez Z d\'abord pour un positionnement sûr, ou déplacez quand même — les butées logicielles seront ignorées.',
-      homeZ: 'Référencer Z',
+      notHomedMessage: 'L\'imprimante n\'a pas été référencée depuis la dernière impression. Lancez la référence automatique d\'abord pour un positionnement sûr (parque la tête d\'outil, puis référence X, Y et Z), ou déplacez quand même — les butées logicielles seront ignorées.',
+      homeZ: 'Référence automatique',
       moveAnyway: 'Déplacer quand même',
-      homingStarted: 'Référencement de l\'axe Z…',
+      homingStarted: 'Référencement automatique en cours…',
     },
     // Permissions
     permission: {
