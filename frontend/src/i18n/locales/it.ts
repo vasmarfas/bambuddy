@@ -341,10 +341,10 @@ export default {
       down: 'Sposta piano giù',
       disabledWhilePrinting: 'Disabilitato durante la stampa',
       notHomedTitle: 'Stampante non azzerata',
-      notHomedMessage: 'L\'asse Z non è stato azzerato dall\'ultima stampa. Azzera Z prima per un posizionamento sicuro, oppure muovi comunque — i finecorsa software verranno ignorati.',
-      homeZ: 'Azzera Z',
+      notHomedMessage: 'La stampante non è stata azzerata dall\'ultima stampa. Esegui prima l\'azzeramento automatico per un posizionamento sicuro (parcheggia la testa di stampa, poi azzera X, Y e Z), oppure muovi comunque — i finecorsa software verranno ignorati.',
+      homeZ: 'Azzeramento automatico',
       moveAnyway: 'Muovi comunque',
-      homingStarted: 'Azzeramento asse Z…',
+      homingStarted: 'Azzeramento automatico in corso…',
     },
     // Permissions
     permission: {

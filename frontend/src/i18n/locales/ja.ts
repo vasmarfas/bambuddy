@@ -340,10 +340,10 @@ export default {
       down: 'プレートを下へ',
       disabledWhilePrinting: '印刷中は無効',
       notHomedTitle: 'プリンターがホーミングされていません',
-      notHomedMessage: '前回の印刷以降、Z軸がホーミングされていません。安全な位置決めのためにまずZをホーミングするか、このまま移動してください — ソフトエンドストップはバイパスされます。',
-      homeZ: 'Zをホーミング',
+      notHomedMessage: '前回の印刷以降、プリンターがホーミングされていません。安全な位置決めのためにまずオートホーミングを実行するか（ツールヘッドをパークしてからX・Y・Zをホーミングします）、このまま移動してください — ソフトエンドストップはバイパスされます。',
+      homeZ: 'オートホーミング',
       moveAnyway: 'このまま移動',
-      homingStarted: 'Z軸をホーミング中…',
+      homingStarted: 'プリンターをオートホーミング中…',
     },
     // Permissions
     permission: {

@@ -341,10 +341,10 @@ export default {
       down: '热床下移',
       disabledWhilePrinting: '打印中已禁用',
       notHomedTitle: '打印机未归零',
-      notHomedMessage: '自上次打印以来 Z 轴尚未归零。请先归零 Z 以确保安全定位，或者直接移动 — 软限位将被绕过。',
-      homeZ: '归零 Z',
+      notHomedMessage: '打印机自上次打印以来尚未归零。请先执行自动归零以确保安全定位（先停放喷头，然后归零 X、Y 和 Z），或者直接移动 — 软限位将被绕过。',
+      homeZ: '自动归零',
       moveAnyway: '强制移动',
-      homingStarted: 'Z 轴归零中…',
+      homingStarted: '打印机自动归零中…',
     },
     // Permissions
     permission: {

@@ -341,10 +341,10 @@ export default {
       down: '熱床下移',
       disabledWhilePrinting: '列印中已停用',
       notHomedTitle: '印表機未歸零',
-      notHomedMessage: '自上次列印以來 Z 軸尚未歸零。請先歸零 Z 以確保安全定位，或者直接移動 — 軟限位將被繞過。',
-      homeZ: '歸零 Z',
+      notHomedMessage: '印表機自上次列印以來尚未歸零。請先執行自動歸零以確保安全定位（先停放噴頭，然後歸零 X、Y 和 Z），或者直接移動 — 軟限位將被繞過。',
+      homeZ: '自動歸零',
       moveAnyway: '強制移動',
-      homingStarted: 'Z 軸歸零中…',
+      homingStarted: '印表機自動歸零中…',
     },
     // Permissions
     permission: {

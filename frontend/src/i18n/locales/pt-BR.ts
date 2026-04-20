@@ -341,10 +341,10 @@ export default {
       down: 'Mover mesa para baixo',
       disabledWhilePrinting: 'Desativado durante a impressão',
       notHomedTitle: 'Impressora não referenciada',
-      notHomedMessage: 'O eixo Z não foi referenciado desde a última impressão. Referencie Z primeiro para um posicionamento seguro, ou mova assim mesmo — os fins de curso de software serão ignorados.',
-      homeZ: 'Referenciar Z',
+      notHomedMessage: 'A impressora não foi referenciada desde a última impressão. Execute a referência automática primeiro para um posicionamento seguro (estaciona o cabeçote, depois referencia X, Y e Z), ou mova assim mesmo — os fins de curso de software serão ignorados.',
+      homeZ: 'Referência automática',
       moveAnyway: 'Mover assim mesmo',
-      homingStarted: 'Referenciando eixo Z…',
+      homingStarted: 'Referenciando impressora automaticamente…',
     },
     // Permissions
     permission: {
