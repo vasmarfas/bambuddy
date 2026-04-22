@@ -39,6 +39,7 @@ from backend.app.services.bambu_ftp import (
 )
 from backend.app.services.printer_manager import (
     get_derived_status_name,
+    parse_plate_id,
     printer_manager,
     supports_chamber_temp,
     supports_drying,
@@ -561,6 +562,26 @@ async def get_printer_status(
             k: v for k, v in temperatures.items() if k not in ("chamber", "chamber_target", "chamber_heating")
         }
 
+    # Resolve the active print's archive + plate (#881 follow-up): lets the
+    # printer card show the actual plate name for multi-plate 3MFs instead of
+    # just the 3MF filename. Only attempted for active prints, since subtask_id
+    # is only meaningful then.
+    current_archive_id: int | None = None
+    current_plate_id: int | None = None
+    if state.state in ("RUNNING", "PAUSE"):
+        current_plate_id = parse_plate_id(state.gcode_file)
+        if state.subtask_id:
+            from backend.app.models.archive import PrintArchive
+
+            archive_row = await db.execute(
+                select(PrintArchive.id)
+                .where(PrintArchive.subtask_id == state.subtask_id)
+                .where(PrintArchive.printer_id == printer_id)
+                .order_by(PrintArchive.created_at.desc())
+                .limit(1)
+            )
+            current_archive_id = archive_row.scalar_one_or_none()
+
     return PrinterStatus(
         id=printer_id,
         name=printer.name,
@@ -612,6 +633,8 @@ async def get_printer_status(
         developer_mode=state.developer_mode if state else None,
         awaiting_plate_clear=printer_manager.is_awaiting_plate_clear(printer_id),
         supports_drying=supports_drying(printer.model, state.firmware_version),
+        current_archive_id=current_archive_id,
+        current_plate_id=current_plate_id,
     )
 
 
@@ -1725,6 +1748,15 @@ async def start_calibration(
 # ============================================================================
 
 
+def _slot_preset_key(ams_id: int, tray_id: int) -> int:
+    # Mirrors frontend getGlobalTrayId (amsHelpers.ts): AMS-HT (128-135) is keyed
+    # by ams_id since each unit has a single slot and shares its global ID with
+    # the unit itself. Regular AMS and external (255) use ams_id*4+tray_id.
+    if 128 <= ams_id <= 135:
+        return ams_id
+    return ams_id * 4 + tray_id
+
+
 @router.get("/{printer_id}/slot-presets")
 async def get_slot_presets(
     printer_id: int,
@@ -1736,7 +1768,7 @@ async def get_slot_presets(
     mappings = result.scalars().all()
 
     return {
-        mapping.ams_id * 4 + mapping.tray_id: {
+        _slot_preset_key(mapping.ams_id, mapping.tray_id): {
             "ams_id": mapping.ams_id,
             "tray_id": mapping.tray_id,
             "preset_id": mapping.preset_id,

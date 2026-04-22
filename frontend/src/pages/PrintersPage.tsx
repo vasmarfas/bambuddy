@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { compareFwVersions } from '../utils/firmwareVersion';
+import { formatPrintName } from '../utils/printName';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../contexts/ThemeContext';
@@ -89,17 +90,6 @@ import { getColorName, parseFilamentColor, isLightColor } from '../utils/colors'
 
 // Color names resolve via getColorName() which reads the backend color_catalog
 // (loaded once by ColorCatalogProvider). No hardcoded tables here — see #857.
-
-// Extract plate number from gcode_file path and append to print name
-function formatPrintName(name: string | null, gcodeFile: string | null | undefined, t: (key: string, fallback: string, opts?: Record<string, unknown>) => string): string {
-  if (!name) return '';
-  if (!gcodeFile) return name;
-  const match = gcodeFile.match(/plate_(\d+)\.gcode/);
-  if (match && parseInt(match[1], 10) > 1) {
-    return `${name} — ${t('printers.plateNumber', 'Plate {{number}}', { number: match[1] })}`;
-  }
-  return name;
-}
 
 // Format K value with 3 decimal places, default to 0.020 if null
 function formatKValue(k: number | null | undefined): string {
@@ -1528,6 +1518,23 @@ function PrinterCard({
     staleTime: 2 * 60 * 1000, // 2 minutes
   });
 
+  // Fetch plate list for the archive linked to the active print (#881 follow-up).
+  // Only queried when there's a running print backed by an archive; shared
+  // React Query cache with the Queue / Archives pages keeps it cheap.
+  const activeArchiveId =
+    (status?.state === 'RUNNING' || status?.state === 'PAUSE') ? status?.current_archive_id ?? null : null;
+  const { data: activeArchivePlates } = useQuery({
+    queryKey: ['archive-plates', activeArchiveId],
+    queryFn: () => api.getArchivePlates(activeArchiveId!),
+    enabled: activeArchiveId != null,
+    staleTime: 5 * 60 * 1000,
+  });
+  const activePlateLabel = (() => {
+    if (!activeArchivePlates?.is_multi_plate || status?.current_plate_id == null) return null;
+    const plate = activeArchivePlates.plates.find(p => p.index === status.current_plate_id);
+    return plate?.name || t('printers.plateNumber', 'Plate {{number}}', { number: status.current_plate_id });
+  })();
+
   // Fetch user-defined AMS friendly names from the database
   const { data: amsLabels, refetch: refetchAmsLabels } = useQuery({
     queryKey: ['amsLabels', printer.id],
@@ -2718,7 +2725,7 @@ function PrinterCard({
                     {/* Cover Image */}
                     <CoverImage
                       url={(status.state === 'RUNNING' || status.state === 'PAUSE') ? status.cover_url : null}
-                      printName={(status.state === 'RUNNING' || status.state === 'PAUSE') ? (formatPrintName(status.subtask_name || status.current_print || null, status.gcode_file, t) || undefined) : undefined}
+                      printName={(status.state === 'RUNNING' || status.state === 'PAUSE') ? (formatPrintName(status.subtask_name || status.current_print || null, status.gcode_file, t, activePlateLabel) || undefined) : undefined}
                     />
                     {/* Print Info */}
                     <div className="flex-1 min-w-0">
@@ -2729,7 +2736,7 @@ function PrinterCard({
                             {plateStatusPill}
                           </div>
                           <p className="text-white text-sm mb-2 truncate">
-                            {formatPrintName(status.subtask_name || status.current_print || null, status.gcode_file, t)}
+                            {formatPrintName(status.subtask_name || status.current_print || null, status.gcode_file, t, activePlateLabel)}
                           </p>
                           <div className="flex items-center justify-between text-sm">
                             <div className="flex-1 bg-bambu-dark-tertiary rounded-full h-2 mr-3">
@@ -2800,7 +2807,7 @@ function PrinterCard({
                 </div>
 
                 {/* Queue Widget - always visible when there are pending items */}
-                <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} printerState={status.state} awaitingPlateClear={status.awaiting_plate_clear} requirePlateClear={requirePlateClear} loadedFilamentTypes={loadedFilamentTypes} loadedFilaments={loadedFilaments} />
+                <PrinterQueueWidget printerId={printer.id} printerModel={printer.model} loadedFilamentTypes={loadedFilamentTypes} loadedFilaments={loadedFilaments} />
               </>
             )}
 
@@ -3559,7 +3566,7 @@ function PrinterCard({
                                       </FilamentHoverCard>
                                     ) : (
                                       <EmptySlotHoverCard
-                                        configureSlot={tray?.state === 10 ? {
+                                        configureSlot={{
                                           enabled: hasPermission('printers:control'),
                                           onConfigure: () => setConfigureSlotModal({
                                             amsId: ams.id,
@@ -3567,8 +3574,8 @@ function PrinterCard({
                                             trayCount: ams.tray.length,
                                             extruderId: mappedExtruderId,
                                           }),
-                                        } : undefined}
-                                        inventory={tray?.state === 10 && !spoolmanEnabled ? {
+                                        }}
+                                        inventory={spoolmanEnabled ? undefined : {
                                           onAssignSpool: () => setAssignSpoolModal({
                                             printerId: printer.id,
                                             amsId: ams.id,
@@ -3579,7 +3586,7 @@ function PrinterCard({
                                               location: `${getAmsLabel(ams.id, ams.tray.length)} Slot ${slotIdx + 1}`,
                                             },
                                           }),
-                                        } : undefined}
+                                        }}
                                       >
                                         {slotVisual}
                                       </EmptySlotHoverCard>
@@ -3877,7 +3884,7 @@ function PrinterCard({
                                   </FilamentHoverCard>
                                 ) : (
                                   <EmptySlotHoverCard
-                                    configureSlot={tray?.state === 10 ? {
+                                    configureSlot={{
                                       enabled: hasPermission('printers:control'),
                                       onConfigure: () => setConfigureSlotModal({
                                         amsId: ams.id,
@@ -3885,8 +3892,8 @@ function PrinterCard({
                                         trayCount: ams.tray.length,
                                         extruderId: mappedExtruderId,
                                       }),
-                                    } : undefined}
-                                    inventory={tray?.state === 10 && !spoolmanEnabled ? {
+                                    }}
+                                    inventory={spoolmanEnabled ? undefined : {
                                       onAssignSpool: () => setAssignSpoolModal({
                                         printerId: printer.id,
                                         amsId: ams.id,
@@ -3897,7 +3904,7 @@ function PrinterCard({
                                           location: getAmsLabel(ams.id, ams.tray.length),
                                         },
                                       }),
-                                    } : undefined}
+                                    }}
                                   >
                                     {slotVisual}
                                   </EmptySlotHoverCard>
@@ -4391,6 +4398,7 @@ function PrinterCard({
           initialSelectedPrinterIds={[printer.id]}
           onClose={() => setPrintAfterUpload(null)}
           onSuccess={() => setPrintAfterUpload(null)}
+          cleanupLibraryAfterDispatch
         />
       )}
 
@@ -6478,7 +6486,11 @@ export function PrintersPage() {
             <div className="relative w-full sm:max-w-sm mt-3">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-bambu-gray/50" />
               <input
-                type="text"
+                type="search"
+                name="printer-search"
+                autoComplete="off"
+                data-1p-ignore
+                data-lpignore="true"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={t('printers.search')}
